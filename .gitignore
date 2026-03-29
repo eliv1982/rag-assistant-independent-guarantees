@@ -1,0 +1,26 @@
+# Секреты и окружение
+.env
+.env.local
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+venv_py311/
+
+# Векторное хранилище и кеш RAG (пересобираются локально)
+assistant_api/chroma_db/
+assistant_api/api_rag_cache.db
+
+# IDE
+.idea/
+.vscode/
+
+# Прочее
+*.log
+установка python 3-11.txt
+
+# Не входит в поддерживаемый состав репозитория (исторический вариант)
+assistant_giga/
