@@ -4,9 +4,12 @@
 
 import os
 import sys
+import time
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
+from db_logger import DatabaseLogger
 from rag_pipeline import RAGPipeline
 
 # Загрузка переменных окружения из .env файла
@@ -84,6 +87,31 @@ def print_response(result: dict):
     print(f"{'─'*60}\n")
 
 
+def _interaction_log_fields(
+    result: Any,
+    pipeline: RAGPipeline,
+) -> Dict[str, Any]:
+    """Извлечение полей для DatabaseLogger из результата pipeline."""
+    if isinstance(result, dict):
+        context_docs = result.get("context_docs") or []
+        sources_count = len(context_docs) if isinstance(context_docs, list) else None
+        return {
+            "response": str(result.get("answer", "")),
+            "from_cache": bool(result.get("from_cache", False)),
+            "model": result.get("model") or pipeline.model,
+            "top_k": pipeline.top_k,
+            "sources_count": sources_count,
+        }
+
+    return {
+        "response": str(result),
+        "from_cache": False,
+        "model": pipeline.model,
+        "top_k": pipeline.top_k,
+        "sources_count": None,
+    }
+
+
 def print_stats(pipeline: RAGPipeline):
     """
     Вывод статистики системы.
@@ -141,7 +169,9 @@ def main():
             model=os.getenv("RAG_CHAT_MODEL", "gpt-4o-mini"),
         )
         print("\n✅ Система готова к работе!\n")
-        
+
+        logger = DatabaseLogger()
+
     except Exception as e:
         print(f"❌ Ошибка инициализации: {e}")
         sys.exit(1)
@@ -171,12 +201,37 @@ def main():
             if not user_input:
                 print("⚠️  Пожалуйста, введите вопрос\n")
                 continue
-            
-            # Обработка запроса через RAG pipeline
-            result = pipeline.query(user_input)
-            
-            # Вывод результата
-            print_response(result)
+
+            start = time.perf_counter()
+            try:
+                result = pipeline.query(user_input)
+                response_time_ms = int((time.perf_counter() - start) * 1000)
+
+                fields = _interaction_log_fields(result, pipeline)
+                logger.log_interaction(
+                    query=user_input,
+                    response=fields["response"],
+                    from_cache=fields["from_cache"],
+                    response_time_ms=response_time_ms,
+                    model=fields["model"],
+                    top_k=fields["top_k"],
+                    sources_count=fields["sources_count"],
+                    interface="cli",
+                )
+
+                print_response(result)
+
+            except Exception as e:
+                response_time_ms = int((time.perf_counter() - start) * 1000)
+                logger.log_error(
+                    query=user_input,
+                    error_message=str(e),
+                    response_time_ms=response_time_ms,
+                    model=pipeline.model,
+                    top_k=pipeline.top_k,
+                    interface="cli",
+                )
+                print(f"\n❌ Ошибка: {e}\n")
             
         except KeyboardInterrupt:
             print("\n\n👋 Прервано пользователем. До свидания!")
