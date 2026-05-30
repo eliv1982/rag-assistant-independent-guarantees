@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 try:
-    from .db_logger import DatabaseLogger
+    from .db_logger import DatabaseLogger, get_logs_db_path
     from .rag_helpers import (
         create_rag_pipeline,
         interaction_log_fields,
@@ -23,7 +23,7 @@ try:
     )
     from .rag_pipeline import RAGPipeline
 except ImportError:
-    from db_logger import DatabaseLogger
+    from db_logger import DatabaseLogger, get_logs_db_path
     from rag_helpers import (
         create_rag_pipeline,
         interaction_log_fields,
@@ -51,7 +51,7 @@ def get_logger() -> DatabaseLogger:
     """Ленивая инициализация DatabaseLogger."""
     global _logger
     if _logger is None:
-        _logger = DatabaseLogger()
+        _logger = DatabaseLogger(db_path=get_logs_db_path())
     return _logger
 
 
