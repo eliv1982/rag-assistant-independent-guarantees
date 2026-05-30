@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Assistant: Independent Guarantees</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="container">
+            <h1>RAG Assistant: Independent Guarantees</h1>
+            <p class="subtitle">Ассистент по вопросам независимых гарантий на основе базы знаний (ГК РФ, URDG, судебная практика).</p>
+            <p class="disclaimer">Ответ носит информационный характер и не является юридической консультацией.</p>
+        </div>
+    </header>
+
+    <main class="container">
+        <nav class="nav-links">
+            <a href="/stats">Статистика запросов</a>
+        </nav>
+
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+
+        <section class="card">
+            <h2>Задайте вопрос</h2>
+            <form action="/ask" method="post" class="ask-form">
+                <label for="question">Ваш вопрос</label>
+                <textarea id="question" name="question" rows="5" placeholder="Например: когда независимая гарантия вступает в силу по ГК РФ?" required>{{ question }}</textarea>
+                <button type="submit" class="btn-primary">Спросить ассистента</button>
+            </form>
+        </section>
+
+        {% if answer_html or answer %}
+        <section class="card answer-card">
+            <h2>Ответ</h2>
+            <div class="answer-content">
+                {% if answer_html %}
+                {{ answer_html | safe }}
+                {% else %}
+                {{ answer }}
+                {% endif %}
+            </div>
+        </section>
+
+        <section class="card metadata-card">
+            <h2>Метаданные</h2>
+            <dl class="metadata-list">
+                <div>
+                    <dt>Источник</dt>
+                    <dd>{% if metadata.from_cache %}Кеш{% else %}OpenAI API{% endif %}</dd>
+                </div>
+                <div>
+                    <dt>Модель</dt>
+                    <dd>{{ metadata.model or "—" }}</dd>
+                </div>
+                <div>
+                    <dt>Время ответа</dt>
+                    <dd>{{ metadata.response_time_ms }} мс</dd>
+                </div>
+                <div>
+                    <dt>Документов в контексте</dt>
+                    <dd>{{ metadata.sources_count if metadata.sources_count is not none else "—" }}</dd>
+                </div>
+            </dl>
+        </section>
+
+        {% if sources %}
+        <section class="card sources-card">
+            <h2>Источники (context_docs)</h2>
+            <ol class="sources-list">
+                {% for source in sources %}
+                <li class="source-item">
+                    <div class="source-meta">
+                        {% if source.label %}<span class="source-label">{{ source.label }}</span>{% endif %}
+                        {% if source.heading %}<span class="source-heading">{{ source.heading }}</span>{% endif %}
+                    </div>
+                    <p class="source-text">{{ source.text }}</p>
+                </li>
+                {% endfor %}
+            </ol>
+        </section>
+        {% endif %}
+        {% endif %}
+    </main>
+
+    <footer class="site-footer">
+        <div class="container">
+            <p>RAG Assistant — учебный проект по независимым гарантиям</p>
+        </div>
+    </footer>
+</body>
+</html>
