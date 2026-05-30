@@ -13,7 +13,10 @@ import time
 from dotenv import load_dotenv
 from openai import APIConnectionError, APITimeoutError
 
-from openai_client import get_openai_client
+try:
+    from .openai_client import get_openai_client
+except ImportError:
+    from openai_client import get_openai_client
 
 env_path = Path(__file__).parent.parent / ".env"
 if env_path.exists():
