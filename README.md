@@ -1,133 +1,200 @@
-# RAG-ассистент по независимым гарантиям
+# RAG Assistant: Independent Guarantees
 
-**Кратко:** консольный ассистент на базе **RAG** (retrieval-augmented generation) по **независимым гарантиям** с опорой на загружаемую базу нормативных и аналитических текстов, кешированием ответов и оценкой качества через **RAGAS**.
+Портфолио **MVP RAG-ассистента** по независимым гарантиям. Проект включает **web-интерфейс на FastAPI**, **CLI-режим**, RAG-поиск по корпусу **ГК РФ / URDG / обзора судебной практики**, SQLite-кеш ответов, **SQLite-логирование взаимодействий**, **страницу метрик** и **Docker deployment**.
 
-## Задача и специфика ассистента
+Ответы носят **информационный характер** и **не являются юридической консультацией**.
 
-Ассистент отвечает на вопросы пользователя **только на основе извлечённых фрагментов** корпуса (retrieval → LLM). Промпт настроен под **юридическую предметную область**: независимые гарантии, с разделением уровней источников (закон РФ, правила URDG, обзор судебной практики ВС РФ).
+---
 
-**Типовой состав базы знаний (по умолчанию):**
+## Что умеет MVP
+
+- отвечает на вопросы по независимым гарантиям на основе RAG-корпуса;
+- показывает использованные **context docs / источники**;
+- работает через **FastAPI web UI** и **CLI**;
+- кеширует ответы в SQLite;
+- логирует web- и CLI-взаимодействия;
+- показывает статистику запросов на **`/stats`**;
+- поддерживает **safe Markdown rendering** в web UI;
+- использует **deduplication** для retrieved context docs;
+- запускается локально и через **Docker**.
+
+---
+
+## База знаний
+
+По умолчанию корпус включает:
 
 - положения **ГК РФ** о независимой гарантии;
 - **URDG 2010** (унифицированные правила);
 - **обзор судебной практики ВС РФ** по спорам с участием независимой гарантии.
 
-Файлы задаются в `assistant_api/corpus_config.py`, исходные тексты — в `assistant_api/data/*.txt`.
+Исходные тексты: `assistant_api/data/*.txt`  
+Конфигурация корпуса и метаданные источников: `assistant_api/corpus_config.py`
 
 ---
 
-## Архитектура (`assistant_api/`)
+## Архитектура
 
 | Компонент | Назначение |
 |-----------|------------|
-| `app.py` | Консольный интерфейс |
-| `rag_pipeline.py` | Кеш → Chroma → промпт → OpenAI Chat |
-| `vector_store.py` | ChromaDB, нарезка текста, эмбеддинги OpenAI |
-| `cache.py` | SQLite-кеш ответов (ключ с `RAG_CORPUS_VERSION`) |
-| `openai_client.py` | Единый клиент OpenAI (таймаут, `OPENAI_BASE_URL`) |
-| `corpus_config.py` | Список файлов корпуса и метаданные источников |
-| `evaluate_ragas.py` | Оценка **Faithfulness**, **Context precision** (эталон), **Context utilization** (ответ RAG) |
+| `assistant_api/web_app.py` | FastAPI web UI: `/`, `/ask`, `/stats`, `/health` |
+| `assistant_api/app.py` | CLI-интерфейс |
+| `assistant_api/rag_pipeline.py` | RAG pipeline: кеш → Chroma → промпт → LLM |
+| `assistant_api/vector_store.py` | ChromaDB, chunking, embeddings |
+| `assistant_api/cache.py` | SQLite response cache |
+| `assistant_api/db_logger.py` | SQLite interaction logger |
+| `assistant_api/rag_helpers.py` | Helpers / factory для web-слоя |
+| `assistant_api/retrieval_utils.py` | Deduplication retrieved context docs |
+| `assistant_api/openai_client.py` | OpenAI-compatible client |
+| `assistant_api/evaluate_ragas.py` | RAGAS evaluation |
+| `assistant_api/templates/`, `assistant_api/static/` | Web UI templates и styles |
+| `Dockerfile`, `docker-compose.yml` | Docker deployment |
+| `runtime/` | Runtime data на хосте (в т.ч. `logs.db` в Docker) |
 
 ---
 
-## Требования
+## Logging and metrics
 
-- Python **3.11+**
-- ключ **OpenAI API** (или совместимый эндпоинт, см. ниже)
-- зависимости: `pip install -r requirements.txt`
+`DatabaseLogger` пишет каждое взаимодействие в **SQLite**.
 
-Скопируйте `.env.example` в **`.env` в корне репозитория** (рядом с `README`) и заполните переменные.
+| Параметр | Значение |
+|----------|----------|
+| Путь к БД | `LOGS_DB_PATH` |
+| Локально по умолчанию | `assistant_api/logs.db` |
+| В Docker | `/app/runtime/logs.db` (volume `./runtime:/app/runtime`) |
+
+**Логируются:** `query`, `response`, `interface` (`cli` / `web`), `status` (`success` / `error`), `response_time_ms`, `from_cache`, `model`, `top_k`, `sources_count`, `error_message`.
+
+**Не логируются:** credentials, tokens, значения переменных окружения и прочие секреты.
+
+**`/stats`** показывает: total requests, successful / failed, cache hits, cache hit rate, average response time, таблицу recent requests.
 
 ---
 
-## Запуск ассистента
+## Web UI routes
+
+| Маршрут | Назначение |
+|---------|------------|
+| `GET /` | форма вопроса |
+| `POST /ask` | обработка вопроса |
+| `GET /stats` | статистика взаимодействий |
+| `GET /health` | health check (`{"status": "ok"}`) |
+
+---
+
+## Screenshots
+
+![Web interface](screenshots/01_web_home.png)
+
+![Stats page](screenshots/02_stats_page.png)
+
+---
+
+## Local run
+
+**Требования:** Python **3.11+**, зависимости из `requirements.txt`. Скопируйте `.env.example` → `.env` в корне репозитория и заполните переменные.
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+uvicorn assistant_api.web_app:app --reload --host 127.0.0.1 --port 8000
+```
+
+- Web UI: http://127.0.0.1:8000  
+- Stats: http://127.0.0.1:8000/stats  
+- Health: http://127.0.0.1:8000/health  
+
+---
+
+## Docker run
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+- Web UI: http://127.0.0.1:8010  
+- Порт на хосте **8010** → контейнер **8000**  
+- Runtime logs DB на хосте: `./runtime/logs.db`
+
+---
+
+## CLI run
 
 ```bash
 cd assistant_api
 python app.py
 ```
 
-Команды: `stats`, `clear` (кеш), `exit`.
-
-После **смены корпуса или параметров нарезки**: удалите каталог `assistant_api/chroma_db` (или задайте новый `RAG_CHROMA_PATH`), увеличьте `RAG_CORPUS_VERSION`, при необходимости удалите `assistant_api/api_rag_cache.db`, затем запустите снова — выполнится переиндексация.
+Команды в сессии: `stats`, `clear` (очистка кеша), `exit`.
 
 ---
 
-## Проверка качества (RAGAS)
+## Checks
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+python -m compileall assistant_api tests -q
+python -c "import assistant_api.web_app; print('web_app import OK')"
+```
+
+---
+
+## RAGAS evaluation
+
+Дополнительная оценка качества retrieval и генерации:
 
 ```bash
 cd assistant_api
 python evaluate_ragas.py
 ```
 
-Скрипт вызывает ваш `RAGPipeline` **без кеша**, подставляет **вручную заданные эталоны** в `evaluate_ragas.py` (`EVALUATION_GROUND_TRUTHS`) и считает метрики. Для отчёта зафиксируйте версии `ragas` и `langchain-*` из окружения.
+Скрипт вызывает `RAGPipeline` **без кеша**, использует эталоны из `EVALUATION_GROUND_TRUTHS` в `evaluate_ragas.py` и считает метрики **Faithfulness**, **Context precision**, **Context utilization**. Для отчёта зафиксируйте версии `ragas` и `langchain-*` из окружения.
 
 ---
 
-## Перенастройка под другие LLM и другую базу
+## LLM / corpus customization
 
-Проект изначально заточен под **OpenAI Python SDK** (`openai`) для чата и эмбеддингов. Логика RAG (Chroma, кеш, промпты) отделена от конкретного облака — переключение сводится к **клиенту API** и **переменным окружения**.
+Проект использует **OpenAI Python SDK** для чата и эмбеддингов; RAG-логика отделена от провайдера.
 
-### 1. Другая модель того же провайдера (OpenAI)
+| Задача | Где настраивать |
+|--------|-----------------|
+| Модель чата / эмбеддингов | `.env`: `RAG_CHAT_MODEL`, `RAG_EMBEDDING_MODEL` |
+| OpenAI-compatible endpoint | `.env`: `OPENAI_BASE_URL` (`assistant_api/openai_client.py`) |
+| Состав корпуса и метаданные | `assistant_api/corpus_config.py` |
+| Chunking, overlap | `.env`: `RAG_CHUNK_*`, `RAG_EMBEDDING_MODEL` |
+| Промпт и структура ответа | `assistant_api/rag_pipeline.py` |
+| Путь Chroma | `.env`: `RAG_CHROMA_PATH` или аргументы `RAGPipeline` |
 
-В **`.env`**: `RAG_CHAT_MODEL`, `RAG_EMBEDDING_MODEL` (например `gpt-4o`, `text-embedding-3-large`).
+После смены корпуса или параметров нарезки: удалите `assistant_api/chroma_db` (или задайте новый `RAG_CHROMA_PATH`), увеличьте **`RAG_CORPUS_VERSION`**, при необходимости очистите `assistant_api/api_rag_cache.db`, затем перезапустите — выполнится переиндексация.
 
-### 2. OpenAI-совместимый API (другой хостинг моделей)
-
-Эндпоинт в формате **Chat Completions** и **Embeddings**, как у OpenAI, поддерживают многие провайдеры: достаточно **`OPENAI_BASE_URL`** и ключа (часто в том же `OPENAI_API_KEY`). Реализация: `assistant_api/openai_client.py`. У конкретного вендора уточните базовый URL, имя модели для `RAG_CHAT_MODEL` / `RAG_EMBEDDING_MODEL` и заголовки (иногда нужен отдельный ключ для эмбеддингов).
-
-**Россия и близкие юрисдикции**
-
-- **Cloud.ru** Foundation Models  
-- **Yandex AI Studio** и шлюзы с совместимым API  
-- иные корпоративные шлюзы к on-prem моделям
-
-**Западные облака и агрегаторы**
-
-- **Microsoft Azure OpenAI** (отдельный endpoint ресурса, не `api.openai.com`)  
-- **Groq**, **Together AI**, **Fireworks AI**, **Mistral AI** (часть продуктов)  
-- **OpenRouter** — единая точка доступа к разным моделям через OpenAI-совместимый API  
-- **NVIDIA NIM**, **Anyscale**, **DeepInfra** и аналоги — по документации провайдера  
-- **локальный вывод:** **vLLM**, **TGI** (Hugging Face), **LocalAI**, **Ollama** (режим совместимости), прокси **LiteLLM**
-
-**Китай Азия**
-
-- **Alibaba DashScope** (семейство **Qwen**) — режим совместимости с OpenAI  
-- **Zhipu AI** (**GLM**), **Moonshot** (**Kimi**), **DeepSeek** API  
-- **SiliconFlow**, **Baichuan** и др. — при наличии в документации пути `/v1/chat/completions` и совместимых эмбеддингов
-
-**Важно:** списки типовые, API меняются; перед продакшеном проверьте лимиты, поддержку **батчевых эмбеддингов** и соответствие модели задаче (юридический русский текст).
-
-### 3. Российские модели без OpenAI-совместимого HTTP
-
-Примеры: **GigaChat** (Сбер), вызовы через собственный SDK или LangChain. Тогда нужно **точечно заменить** вызовы:
-
-| Где | Что менять |
-|-----|------------|
-| `rag_pipeline.py` | метод `_generate_answer` — вместо `self.openai_client.chat.completions.create` использовать клиент GigaChat / Yandex и т.д. |
-| `vector_store.py` | `_create_embedding` / `_create_embeddings_batched` — эмбеддер провайдера (или оставить OpenAI только для векторов, если политика допускает гибрид). |
-
-Промпт (`_create_prompt`, system message) и поток «поиск → контекст → ответ» можно **не трогать**.
-
-### 4. Другая предметная область и другие документы
-
-| Цель | Файл |
-|------|------|
-| Список файлов, подписи источников, тип нарезки | `assistant_api/corpus_config.py` |
-| Пороги чанков, overlap, модель эмбеддингов | `.env` (`RAG_CHUNK_*`, `RAG_EMBEDDING_MODEL`) и при необходимости `vector_store.py` |
-| Инструкции модели и структура ответа | `rag_pipeline.py` |
-| Имя коллекции / путь Chroma | `app.py` (аргументы `RAGPipeline`) или `.env` (`RAG_CHROMA_PATH`) |
-
-После смены корпуса обязательно **пересоберите индекс** и увеличьте **`RAG_CORPUS_VERSION`**.
-
-### 5. RAGAS после смены LLM
-
-`evaluate_ragas.py` использует RAGAS с LLM по умолчанию из окружения. Если метрики перестанут считаться, проверьте [документацию RAGAS](https://docs.ragas.io) для явной передачи LLM в `evaluate()` или зафиксируйте совместимые версии пакетов.
+Для провайдеров без OpenAI-compatible HTTP (например, GigaChat) потребуется точечная замена вызовов в `rag_pipeline.py` (`_generate_answer`) и `vector_store.py` (embeddings).
 
 ---
 
-## Лицензия и дисклеймер
+## Limitations
 
-Ответы ассистента **не являются юридической консультацией**. Корпус и модели нужно верифицировать под вашу задачу.
+- портфолио MVP, не production-ready сервис;
+- качество ответа зависит от корпуса, chunking и retrieval;
+- ассистент может ошибаться или неполно извлекать нормы из контекста;
+- ответы **не являются юридической консультацией**;
+- **`/stats` в публичном деплое** следует закрывать авторизацией;
+- для production нужны auth, rate limits, retention policy for logs, better observability.
 
-Удачного использования.
+---
+
+## Future improvements
+
+- reranking retrieved chunks;
+- better legal chunking by article / paragraph;
+- auth for `/stats` и admin endpoints;
+- CSV export / admin page для логов;
+- Docker + reverse proxy / domain / HTTPS;
+- расширенный evaluation set и автоматизация RAGAS в CI.
+
+---
+
+## License and disclaimer
+
+Ответы ассистента носят информационный характер и **не являются юридической консультацией**. Корпус и модели нужно верифицировать под вашу задачу.
