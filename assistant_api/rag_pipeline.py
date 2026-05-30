@@ -9,10 +9,18 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-from cache import RAGCache
-from openai_client import get_openai_client
-from corpus_config import default_corpus_entries
-from vector_store import VectorStore
+try:
+    from .cache import RAGCache
+    from .corpus_config import default_corpus_entries
+    from .openai_client import get_openai_client
+    from .retrieval_utils import deduplicate_context_docs
+    from .vector_store import VectorStore
+except ImportError:
+    from cache import RAGCache
+    from corpus_config import default_corpus_entries
+    from openai_client import get_openai_client
+    from retrieval_utils import deduplicate_context_docs
+    from vector_store import VectorStore
 
 _env = Path(__file__).resolve().parent.parent / ".env"
 if _env.exists():
@@ -23,10 +31,22 @@ else:
 
 LEGAL_SYSTEM_PROMPT = (
     "Ты — ассистент по вопросам независимых гарантий (банковских и иных). "
-    "Отвечаешь строго на основе переданных фрагментов базы знаний. "
+    "Отвечай строго на основании переданных фрагментов базы знаний. "
+    "Если вопрос просит перечень оснований, способов, случаев или условий — "
+    "извлекай полный перечень из контекста, а не общий пересказ. "
     "Не выдавай юридических заключений и не подменяй консультацию юриста; "
     "формулируй осторожно, если контекст неполный."
 )
+
+PROMPT_INSTRUCTIONS = """- Отвечай только на основании найденного контекста. Если данных недостаточно, прямо укажи, чего не хватает (например, нет статьи ГК или нет позиции суда).
+- Если вопрос просит «способы», «основания», «случаи», «условия», «перечень» или похожий список — сначала дай нумерованный список всех элементов из контекста.
+- Если в контексте есть статья или пункт с явным перечнем оснований, условий, случаев или иных элементов, извлеки все элементы перечня полностью; не заменяй их общим пересказом одной фразой.
+- Для российских правовых вопросов при наличии ГК РФ в контексте приоритизируй нормы ГК РФ; международные правила вроде URDG указывай отдельно.
+- Если в контексте одновременно есть ГК РФ и URDG, структурируй ответ блоками: «По ГК РФ», «По URDG», «Коротко».
+- Для каждого существенного тезиса укажи источник: «ГК РФ», «URDG» или «обзор практики ВС» — по тому, из какого фрагмента он взят.
+- Если во фрагментах есть разные уровни регулирования (закон vs договорная подчинённость URDG vs обобщение судебной практики), не смешивай их молча.
+- Не придумывай номера статей, дел и цитат, которых нет во фрагментах. Не делай юридическую консультацию и не выдумывай нормы вне контекста.
+- Ответ на русском языке; структурируй списком, если это улучшает ясность."""
 
 
 def _normalize_cached_context(raw: Any) -> Optional[List[Dict[str, Any]]]:
@@ -124,11 +144,7 @@ class RAGPipeline:
 Вопрос пользователя: {query}
 
 Инструкции:
-- Отвечай только на основе приведённых фрагментов. Если данных недостаточно, прямо укажи, чего не хватает (например, нет статьи ГК или нет позиции суда).
-- Для каждого существенного тезиса укажи источник: «ГК РФ», «URDG» или «обзор практики ВС» — по тому, из какого фрагмента он взят (ориентируйся на пометки в тексте фрагмента).
-- Если во фрагментах есть разные уровни регулирования (закон vs договорная подчинённость URDG vs обобщение судебной практики), не смешивай их молча: раздели логику («по закону…», «по URDG…», «по позициям из обзора…»).
-- Не придумывай номера статей, дел и цитат, которых нет во фрагментах.
-- Ответ на русском языке; структурируй списком, если это улучшает ясность.
+{PROMPT_INSTRUCTIONS}
 
 Ответ:"""
 
@@ -165,8 +181,13 @@ class RAGPipeline:
             print("[-] Ответ не найден в кеше")
 
         print("[*] Поиск релевантных документов через API...")
-        context_docs = self.vector_store.search(user_query, top_k=self.top_k)
-        print(f"[+] Найдено {len(context_docs)} релевантных документов")
+        candidate_k = max(self.top_k * 3, self.top_k + 5)
+        raw_docs = self.vector_store.search(user_query, top_k=candidate_k)
+        context_docs = deduplicate_context_docs(raw_docs, max_docs=self.top_k)
+        print(
+            f"[+] Найдено {len(raw_docs)} кандидатов, "
+            f"после дедупликации: {len(context_docs)} документов"
+        )
 
         print("[*] Формирование промпта...")
         prompt = self._create_prompt(user_query, context_docs)
