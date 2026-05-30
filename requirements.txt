@@ -8,6 +8,14 @@ sentence-transformers>=2.2.0
 python-dotenv>=1.0.0
 pysbd>=0.3.4
 
+# Web UI
+fastapi>=0.110.0
+uvicorn>=0.27.0
+jinja2>=3.1.0
+python-multipart>=0.0.9
+markdown>=3.5.0
+bleach>=6.0.0
+
 # Совместимые версии для Python 3.11 и RAGAS
 pydantic>=2.0.0,<3.0.0
 langchain>=0.3.0
