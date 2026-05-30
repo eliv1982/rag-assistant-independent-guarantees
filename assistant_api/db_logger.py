@@ -3,12 +3,18 @@ SQLite-логгер взаимодействий с RAG-ассистентом.
 """
 
 import csv
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _DEFAULT_DB_PATH = Path(__file__).resolve().parent / "logs.db"
+
+
+def get_logs_db_path() -> str:
+    """Путь к SQLite-логам: LOGS_DB_PATH или assistant_api/logs.db по умолчанию."""
+    return os.getenv("LOGS_DB_PATH") or str(_DEFAULT_DB_PATH)
 
 _INTERACTION_COLUMNS = (
     "id",
@@ -36,7 +42,7 @@ class DatabaseLogger:
         Args:
             db_path: путь к файлу базы данных SQLite (по умолчанию assistant_api/logs.db)
         """
-        self.db_path = str(db_path) if db_path is not None else str(_DEFAULT_DB_PATH)
+        self.db_path = str(db_path) if db_path is not None else get_logs_db_path()
         self._init_db()
 
     def _init_db(self) -> None:

@@ -1,0 +1,10 @@
+services:
+  rag-guarantees:
+    container_name: rag-guarantees
+    build: .
+    env_file: .env
+    ports:
+      - "8010:8000"
+    restart: unless-stopped
+    volumes:
+      - ./runtime:/app/runtime

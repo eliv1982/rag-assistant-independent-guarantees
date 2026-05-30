@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
-from db_logger import DatabaseLogger
+from db_logger import DatabaseLogger, get_logs_db_path
 from rag_pipeline import RAGPipeline
 
 # Загрузка переменных окружения из .env файла
@@ -170,7 +170,7 @@ def main():
         )
         print("\n✅ Система готова к работе!\n")
 
-        logger = DatabaseLogger()
+        logger = DatabaseLogger(db_path=get_logs_db_path())
 
     except Exception as e:
         print(f"❌ Ошибка инициализации: {e}")
