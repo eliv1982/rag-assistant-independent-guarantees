@@ -13,11 +13,28 @@ from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 
+try:
+    from .db_logger import env_flag
+except ImportError:
+    from db_logger import env_flag
+
 _env = Path(__file__).resolve().parent.parent / ".env"
 if _env.exists():
     load_dotenv(_env)
 else:
     load_dotenv()
+
+ENV_CACHE_ENABLED = "RAG_CACHE_ENABLED"
+
+
+def cache_enabled_from_env() -> bool:
+    """
+    RAG_CACHE_ENABLED: включён ли постоянный кеш ответов (SQLite).
+
+    По умолчанию выключен: кеш хранит тексты вопросов и ответов, поэтому включается только явным
+    1/true/yes/on. Пустое значение и отсутствие переменной = выключен.
+    """
+    return env_flag(ENV_CACHE_ENABLED)
 
 
 class RAGCache:

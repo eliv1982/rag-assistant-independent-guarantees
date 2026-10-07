@@ -219,7 +219,8 @@ class PipelineTestCase(unittest.TestCase):
         patches = [
             mock.patch.object(rag_pipeline, "VectorStore", FakeVectorStore),
             mock.patch.object(rag_pipeline, "get_openai_client", return_value=self.chat),
-            mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}),
+            # Постоянный кеш по умолчанию выключен; эти тесты проверяют его работу, поэтому включают явно.
+            mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "RAG_CACHE_ENABLED": "1"}),
         ]
         for patch in patches:
             patch.start()

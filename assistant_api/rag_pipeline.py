@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 
 try:
-    from .cache import RAGCache
+    from .cache import RAGCache, cache_enabled_from_env
     from .chunking import source_label
     from .corpus_config import (
         collection_name_for,
@@ -30,7 +30,7 @@ try:
     from .retrieval_utils import deduplicate_context_docs
     from .vector_store import VectorStore
 except ImportError:
-    from cache import RAGCache
+    from cache import RAGCache, cache_enabled_from_env
     from chunking import source_label
     from corpus_config import (
         collection_name_for,
@@ -136,6 +136,10 @@ class RAGPipeline:
         Пути и имя коллекции по умолчанию берутся из окружения и корпуса:
         RAG_CHROMA_PATH, RAG_CACHE_DB_PATH; коллекция называется guarantees_<corpus_id>,
         поэтому изменённый корпус индексируется заново, а не подмешивается к старому индексу.
+
+        Постоянный кеш ответов хранит тексты вопросов и ответов, поэтому по умолчанию выключен
+        (RAG_CACHE_ENABLED). Пока он выключен, self.cache = None: файл кеша не открывается,
+        не читается и не пишется, а поиск и вызов модели работают как обычно.
         """
         if not api_key_configured():
             raise ValueError("OPENAI_API_KEY не установлен")
@@ -166,7 +170,8 @@ class RAGPipeline:
 
         if persist_directory is None:
             persist_directory = os.getenv("RAG_CHROMA_PATH") or str(self._base_dir / "chroma_db")
-        if cache_db_path is None:
+        self.cache_enabled = cache_enabled_from_env()
+        if self.cache_enabled and cache_db_path is None:
             cache_db_path = os.getenv("RAG_CACHE_DB_PATH") or str(self._base_dir / "api_rag_cache.db")
 
         print(f"Корпус: {len(corpus_entries)} источников, corpus_id={self.corpus_id}")
@@ -180,8 +185,12 @@ class RAGPipeline:
             print("Загрузка корпуса...")
             self.vector_store.load_corpus(corpus_entries, base_dir=self._base_dir)
 
-        print("Инициализация кеша...")
-        self.cache = RAGCache(db_path=cache_db_path, namespace=self._cache_namespace())
+        self.cache: Optional[RAGCache] = None
+        if self.cache_enabled:
+            print("Инициализация кеша...")
+            self.cache = RAGCache(db_path=cache_db_path, namespace=self._cache_namespace())
+        else:
+            print("Кеш ответов отключён (RAG_CACHE_ENABLED не включён): вопросы и ответы не сохраняются")
 
         print("RAG Pipeline инициализирован (API mode)")
 
@@ -259,10 +268,12 @@ class RAGPipeline:
         }
 
     def query(self, user_query: str, use_cache: bool = True) -> Dict[str, Any]:
+        # Текст вопроса в stdout (docker logs) не выводится: он остаётся только в ответе вызывающему.
         print(f"\n{'='*60}")
-        print(f"Запрос: {user_query}")
+        print("Запрос получен (текст вопроса не выводится в лог)")
         print(f"{'='*60}")
 
+        use_cache = use_cache and self.cache is not None
         if use_cache:
             print("[*] Проверка кеша...")
             cached_result = self.cache.get(user_query)
@@ -334,10 +345,21 @@ class RAGPipeline:
             "finish_reason": finish_reason,
         }
 
+    def _cache_stats(self) -> Dict[str, Any]:
+        if self.cache is None:
+            return {
+                "enabled": False,
+                "total_entries": 0,
+                "oldest_entry": None,
+                "newest_entry": None,
+                "db_size_mb": 0.0,
+            }
+        return {"enabled": True, **self.cache.get_stats()}
+
     def get_stats(self) -> Dict[str, Any]:
         return {
             "vector_store": self.vector_store.get_collection_stats(),
-            "cache": self.cache.get_stats(),
+            "cache": self._cache_stats(),
             "model": self.model,
             "mode": "API",
             "top_k": self.top_k,

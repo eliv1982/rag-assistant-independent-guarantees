@@ -5,8 +5,8 @@
 import os
 from typing import Any, Dict
 
-import bleach
 import markdown
+import nh3
 
 try:
     from .chunking import source_label
@@ -15,7 +15,7 @@ except ImportError:
     from chunking import source_label
     from rag_pipeline import RAGPipeline
 
-_ALLOWED_TAGS = [
+_ALLOWED_TAGS = {
     "p",
     "br",
     "strong",
@@ -31,14 +31,23 @@ _ALLOWED_TAGS = [
     "code",
     "pre",
     "a",
-]
-_ALLOWED_ATTRIBUTES = {
-    "a": ["href", "title", "target", "rel"],
 }
+# Только href и title: target/rel не пропускаются (nh3 сам ставит rel="noopener noreferrer").
+_ALLOWED_ATTRIBUTES = {
+    "a": {"href", "title"},
+}
+# Явный список вместо умолчаний nh3 (в них есть ftp, ssh, irc и др.). javascript:, data:, vbscript: не входят.
+_ALLOWED_URL_SCHEMES = {"http", "https", "mailto"}
 
 
 def render_markdown_safe(text: str) -> str:
-    """Преобразование Markdown в безопасный HTML для отображения в web UI."""
+    """
+    Преобразование Markdown в безопасный HTML для отображения в web UI.
+
+    Markdown пропускает сырой HTML из ответа модели как есть, поэтому результат всегда проходит
+    через nh3 по белому списку тегов, атрибутов и схем ссылок. Содержимое script/style удаляется
+    целиком, относительные ссылки (включая //host) и обработчики событий отбрасываются.
+    """
     if not text:
         return ""
 
@@ -46,13 +55,15 @@ def render_markdown_safe(text: str) -> str:
         text,
         extensions=["extra", "nl2br", "sane_lists"],
     )
-    cleaned = bleach.clean(
+    return nh3.clean(
         html,
         tags=_ALLOWED_TAGS,
         attributes=_ALLOWED_ATTRIBUTES,
-        strip=True,
+        url_schemes=_ALLOWED_URL_SCHEMES,
+        url_relative="deny",
+        link_rel="noopener noreferrer",
+        strip_comments=True,
     )
-    return bleach.linkify(cleaned)
 
 
 def create_rag_pipeline() -> RAGPipeline:

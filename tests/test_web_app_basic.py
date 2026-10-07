@@ -71,6 +71,13 @@ class BrokenLogger:
 class WebAppTestCase(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
+        # Настройки приватности берутся из окружения (в т.ч. из .env разработчика): тесты должны
+        # стартовать с умолчаний - без текстов в журнале и без таблицы последних запросов.
+        env_patcher = mock.patch.dict(os.environ)
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+        for name in ("LOGS_STORE_TEXT", "STATS_SHOW_RECENT"):
+            os.environ.pop(name, None)
         self.original_logger = web_app._logger
         self.original_pipeline = web_app._pipeline
         web_app._pipeline = None
@@ -253,15 +260,16 @@ class TestAskFailures(WebAppTestCase):
 
 
 class TestStatsDegradation(WebAppTestCase):
-    def test_stats_with_records(self):
+    def test_stats_with_records_shows_aggregates_but_not_question_text(self):
         web_app._pipeline = FakePipeline()
-        self.client.post("/ask", data={"question": "Вопрос"})
+        self.client.post("/ask", data={"question": "Уникальный вопрос про гарантию"})
 
         response = self.client.get("/stats")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Вопрос", response.text)
-        self.assertIn("status-success", response.text)
+        self.assertNotIn("Уникальный вопрос", response.text)
+        self.assertIn("fake-model", response.text)  # использование моделей - агрегат
+        self.assertNotIn("Пока нет записей в логе", response.text)
 
     def test_stats_returns_503_page_when_logger_is_unavailable(self):
         web_app._logger = BrokenLogger()

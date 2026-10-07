@@ -138,12 +138,15 @@ def print_stats(pipeline: RAGPipeline):
     print(f"   Директория: {stats['vector_store']['persist_directory']}")
     
     print("\n💾 Кеш:")
-    print(f"   Записей: {stats['cache']['total_entries']}")
-    print(f"   Размер БД: {stats['cache']['db_size_mb']:.2f} MB")
-    if stats['cache']['oldest_entry']:
-        print(f"   Первая запись: {stats['cache']['oldest_entry']}")
-    if stats['cache']['newest_entry']:
-        print(f"   Последняя запись: {stats['cache']['newest_entry']}")
+    if not stats['cache'].get('enabled', True):
+        print("   Отключён (RAG_CACHE_ENABLED не включён): вопросы и ответы не сохраняются")
+    else:
+        print(f"   Записей: {stats['cache']['total_entries']}")
+        print(f"   Размер БД: {stats['cache']['db_size_mb']:.2f} MB")
+        if stats['cache']['oldest_entry']:
+            print(f"   Первая запись: {stats['cache']['oldest_entry']}")
+        if stats['cache']['newest_entry']:
+            print(f"   Последняя запись: {stats['cache']['newest_entry']}")
     
     print(f"\n🤖 Модель: {stats['model']}")
     print(f"🔢 top_k: {stats.get('top_k', '—')}, max_tokens: {stats.get('max_tokens', '—')}")
@@ -193,6 +196,9 @@ def main():
                 continue
             
             if user_input.lower() == 'clear':
+                if pipeline.cache is None:
+                    print("ℹ️  Кеш ответов отключён (RAG_CACHE_ENABLED не включён): очищать нечего\n")
+                    continue
                 confirm = input("⚠️  Вы уверены, что хотите очистить кеш? (yes/no): ")
                 if confirm.lower() in ['yes', 'y', 'да']:
                     pipeline.cache.clear()

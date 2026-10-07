@@ -37,6 +37,13 @@ wait_for() { # wait_for <описание> <секунды> <команда...>
 
 http_code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
+# Число строк журнала по условию SQL: журнал читается прямо из тома, /stats тексты и строки не показывает.
+journal_count() {
+  docker exec "$NAME" python -c \
+    "import sqlite3, sys; print(sqlite3.connect('/app/runtime/logs.db').execute('SELECT COUNT(*) FROM interactions WHERE ' + sys.argv[1]).fetchone()[0])" \
+    "$1"
+}
+
 docker volume create "$VOLUME" >/dev/null
 start_container
 
@@ -70,16 +77,33 @@ ok "/ask без ключа -> 503"
   || fail "/ask с пустым вопросом должен вернуть 400"
 ok "/ask с пустым вопросом -> 400"
 
-stats="$(curl -fsS "${BASE}/stats")"
-echo "$stats" | grep -q "status-error" || fail "ошибка запроса не записана в журнал (/stats)"
 docker exec "$NAME" test -s /app/runtime/logs.db || fail "logs.db не создан в /app/runtime"
+[ "$(journal_count "status = 'error'")" -ge 1 ] || fail "ошибка запроса не записана в журнал"
 ok "журнал пишется в /app/runtime/logs.db"
+
+# Приватность: по умолчанию тексты вопросов в журнал не пишутся, а /stats показывает только агрегаты.
+[ "$(journal_count "query != ''")" = "0" ] || fail "в журнале по умолчанию не должно быть текстов вопросов"
+ok "журнал по умолчанию без текстов вопросов"
+
+stats="$(curl -fsS "${BASE}/stats")"
+echo "$stats" | grep -q "Всего запросов" || fail "/stats не показывает агрегаты"
+if echo "$stats" | grep -q "smoke test"; then fail "/stats показывает текст вопроса"; fi
+if echo "$stats" | grep -q "status-error"; then fail "/stats по умолчанию не должен показывать таблицу последних запросов"; fi
+ok "/stats: только агрегаты, без текстов и таблицы последних запросов"
+
+# -i (а не -D - -o /dev/null): с последней связкой curl под Windows завершается с кодом 23.
+# Тело ответа в переменной не мешает: имена заголовков ищутся только в начале строки.
+headers="$(curl -fsS -i "${BASE}/")"
+for header in "x-content-type-options: nosniff" "referrer-policy:" "content-security-policy:"; do
+  echo "$headers" | grep -qi "^${header}" || fail "нет заголовка безопасности: ${header}"
+done
+ok "заголовки безопасности на главной странице"
 
 # Данные должны переживать пересоздание контейнера (том сохраняется).
 docker rm -f "$NAME" >/dev/null
 start_container
 wait_for "/health после пересоздания" 60 curl -fsS "${BASE}/health"
-curl -fsS "${BASE}/stats" | grep -q "status-error" || fail "журнал не сохранился после пересоздания контейнера"
+[ "$(journal_count "status = 'error'")" -ge 1 ] || fail "журнал не сохранился после пересоздания контейнера"
 ok "журнал сохранился после пересоздания контейнера"
 
 echo "SMOKE PASSED"
