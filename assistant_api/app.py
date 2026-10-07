@@ -6,10 +6,11 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from dotenv import load_dotenv
 from db_logger import DatabaseLogger, get_logs_db_path
+from openai_client import api_key_configured
 from rag_pipeline import RAGPipeline
 
 # Загрузка переменных окружения из .env файла
@@ -140,7 +141,7 @@ def print_stats(pipeline: RAGPipeline):
     
     print(f"\n🤖 Модель: {stats['model']}")
     print(f"🔢 top_k: {stats.get('top_k', '—')}, max_tokens: {stats.get('max_tokens', '—')}")
-    print(f"📌 Версия корпуса (кеш): {stats.get('corpus_version', '—')}")
+    print(f"📌 Корпус: id {stats.get('corpus_id', '—')}, версия {stats.get('corpus_version', '—')}")
     print(f"🌐 Режим: {stats['mode']}")
     print(f"{'═'*60}\n")
 
@@ -150,7 +151,7 @@ def main():
     print_banner()
     
     # Проверка наличия API ключа
-    if not os.getenv("OPENAI_API_KEY"):
+    if not api_key_configured():
         print("❌ Ошибка: переменная окружения OPENAI_API_KEY не установлена")
         print("\nУстановите её следующим образом:")
         print("  Windows (PowerShell): $env:OPENAI_API_KEY='your-key'")
@@ -161,13 +162,7 @@ def main():
     try:
         # Инициализация RAG pipeline
         print("🚀 Инициализация системы...\n")
-        _here = Path(__file__).resolve().parent
-        pipeline = RAGPipeline(
-            collection_name="api_rag_collection",
-            cache_db_path=str(_here / "api_rag_cache.db"),
-            persist_directory=os.getenv("RAG_CHROMA_PATH", str(_here / "chroma_db")),
-            model=os.getenv("RAG_CHAT_MODEL", "gpt-4o-mini"),
-        )
+        pipeline = RAGPipeline(model=os.getenv("RAG_CHAT_MODEL", "gpt-4o-mini"))
         print("\n✅ Система готова к работе!\n")
 
         logger = DatabaseLogger(db_path=get_logs_db_path())

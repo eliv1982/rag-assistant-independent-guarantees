@@ -2,7 +2,8 @@
 Web UI для RAG-ассистента по независимым гарантиям (FastAPI + Jinja2).
 """
 
-import os
+import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -15,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 
 try:
     from .db_logger import DatabaseLogger, get_logs_db_path
+    from .openai_client import api_key_configured
     from .rag_helpers import (
         create_rag_pipeline,
         interaction_log_fields,
@@ -24,6 +26,7 @@ try:
     from .rag_pipeline import RAGPipeline
 except ImportError:
     from db_logger import DatabaseLogger, get_logs_db_path
+    from openai_client import api_key_configured
     from rag_helpers import (
         create_rag_pipeline,
         interaction_log_fields,
@@ -39,12 +42,32 @@ if _env.exists():
 else:
     load_dotenv()
 
+log = logging.getLogger("assistant_api.web")
+
 app = FastAPI(title="RAG Assistant: Independent Guarantees")
 templates = Jinja2Templates(directory=str(_HERE / "templates"))
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
 
 _pipeline: Optional[RAGPipeline] = None
+_pipeline_lock = threading.Lock()
 _logger: Optional[DatabaseLogger] = None
+
+_ERROR_GENERIC = "Не удалось получить ответ. Попробуйте повторить запрос позже."
+_ERROR_UNAVAILABLE = "Ассистент временно недоступен: сервис не настроен."
+_STATS_UNAVAILABLE = "Журнал запросов временно недоступен."
+
+_EMPTY_STATS: Dict[str, Any] = {
+    "total_interactions": 0,
+    "successful_interactions": 0,
+    "failed_interactions": 0,
+    "cache_hits": 0,
+    "cache_hit_rate": 0.0,
+    "average_response_time_ms": None,
+}
+
+
+class AssistantUnavailableError(RuntimeError):
+    """Ассистент не настроен (например, нет OPENAI_API_KEY): запрос не может быть выполнен."""
 
 
 def get_logger() -> DatabaseLogger:
@@ -56,15 +79,37 @@ def get_logger() -> DatabaseLogger:
 
 
 def get_pipeline() -> RAGPipeline:
-    """Ленивая инициализация RAG pipeline (требует OPENAI_API_KEY)."""
+    """
+    Ленивая инициализация RAG pipeline (требует OPENAI_API_KEY).
+    Под блокировкой: одновременные первые запросы не строят индекс дважды.
+    """
     global _pipeline
-    if _pipeline is None:
-        if not os.getenv("OPENAI_API_KEY"):
-            raise RuntimeError(
-                "OPENAI_API_KEY не установлен. Настройте переменную окружения для работы ассистента."
-            )
-        _pipeline = create_rag_pipeline()
-    return _pipeline
+    if _pipeline is not None:
+        return _pipeline
+    with _pipeline_lock:
+        if _pipeline is None:
+            if not api_key_configured():
+                raise AssistantUnavailableError(
+                    "OPENAI_API_KEY не установлен. Настройте переменную окружения для работы ассистента."
+                )
+            _pipeline = create_rag_pipeline()
+        return _pipeline
+
+
+def _log_interaction_safe(**kwargs: Any) -> None:
+    """Журнал вторичен: сбой записи не должен ломать ответ пользователю."""
+    try:
+        get_logger().log_interaction(**kwargs)
+    except Exception:
+        log.exception("Не удалось записать взаимодействие в журнал")
+
+
+def _log_error_safe(**kwargs: Any) -> None:
+    """Сбой журнала не должен скрывать исходную ошибку запроса."""
+    try:
+        get_logger().log_error(**kwargs)
+    except Exception:
+        log.exception("Не удалось записать ошибку в журнал")
 
 
 def _truncate(text: Any, max_len: int = 80) -> str:
@@ -112,18 +157,16 @@ def index(request: Request):
 
 
 @app.post("/ask", response_class=HTMLResponse)
-async def ask(request: Request, question: str = Form(default="")):
+def ask(request: Request, question: str = Form(default="")):
+    # Обычная (не async) функция: FastAPI выполняет её в пуле потоков, и блокирующие
+    # вызовы (OpenAI, Chroma, SQLite) не останавливают event loop.
     question = question.strip()
-    logger = get_logger()
 
     if not question:
         return templates.TemplateResponse(
             request,
             "index.html",
-            _index_context(
-                request,
-                error="Пожалуйста, введите вопрос.",
-            ),
+            _index_context(request, error="Пожалуйста, введите вопрос."),
             status_code=400,
         )
 
@@ -131,79 +174,89 @@ async def ask(request: Request, question: str = Form(default="")):
     try:
         pipeline = get_pipeline()
         result = pipeline.query(question)
-        response_time_ms = int((time.perf_counter() - start) * 1000)
 
         fields = interaction_log_fields(result, pipeline)
-        logger.log_interaction(
-            query=question,
-            response=fields["response"],
-            from_cache=fields["from_cache"],
-            response_time_ms=response_time_ms,
-            model=fields["model"],
-            top_k=fields["top_k"],
-            sources_count=fields["sources_count"],
-            interface="web",
-        )
-
         context_docs = result.get("context_docs") if isinstance(result, dict) else None
         sources = normalize_sources(context_docs)
         answer_html = render_markdown_safe(fields["response"])
-
-        return templates.TemplateResponse(
-            request,
-            "index.html",
-            _index_context(
-                request,
-                question=question,
-                answer=fields["response"],
-                answer_html=answer_html,
-                metadata={
-                    "from_cache": fields["from_cache"],
-                    "response_time_ms": response_time_ms,
-                    "model": fields["model"],
-                    "sources_count": fields["sources_count"],
-                },
-                sources=sources,
-            ),
-        )
-
     except Exception as exc:
         response_time_ms = int((time.perf_counter() - start) * 1000)
-        model = None
-        top_k = None
-        try:
-            pipeline = get_pipeline()
-            model = pipeline.model
-            top_k = pipeline.top_k
-        except Exception:
-            pass
+        log.exception("Ошибка обработки вопроса")
 
-        logger.log_error(
+        # Только уже созданный pipeline: повторная инициализация здесь могла бы заново
+        # индексировать корпус (платные эмбеддинги) ради двух полей журнала.
+        failed_pipeline = _pipeline
+        _log_error_safe(
             query=question,
-            error_message=str(exc),
+            error_message=f"{type(exc).__name__}: {exc}",
             response_time_ms=response_time_ms,
-            model=model,
-            top_k=top_k,
+            model=failed_pipeline.model if failed_pipeline else None,
+            top_k=failed_pipeline.top_k if failed_pipeline else None,
             interface="web",
         )
 
+        unavailable = isinstance(exc, AssistantUnavailableError)
         return templates.TemplateResponse(
             request,
             "index.html",
             _index_context(
                 request,
                 question=question,
-                error=f"Не удалось получить ответ: {exc}",
+                error=_ERROR_UNAVAILABLE if unavailable else _ERROR_GENERIC,
             ),
-            status_code=500,
+            status_code=503 if unavailable else 500,
         )
+
+    response_time_ms = int((time.perf_counter() - start) * 1000)
+    _log_interaction_safe(
+        query=question,
+        response=fields["response"],
+        from_cache=fields["from_cache"],
+        response_time_ms=response_time_ms,
+        model=fields["model"],
+        top_k=fields["top_k"],
+        sources_count=fields["sources_count"],
+        interface="web",
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        _index_context(
+            request,
+            question=question,
+            answer=fields["response"],
+            answer_html=answer_html,
+            metadata={
+                "from_cache": fields["from_cache"],
+                "response_time_ms": response_time_ms,
+                "model": fields["model"],
+                "sources_count": fields["sources_count"],
+            },
+            sources=sources,
+        ),
+    )
 
 
 @app.get("/stats", response_class=HTMLResponse)
 def stats(request: Request):
-    logger = get_logger()
-    stats_data = logger.get_stats()
-    recent_raw = logger.get_recent(limit=10)
+    try:
+        logger = get_logger()
+        stats_data = logger.get_stats()
+        recent_raw = logger.get_recent(limit=10)
+    except Exception:
+        log.exception("Статистика недоступна")
+        return templates.TemplateResponse(
+            request,
+            "stats.html",
+            {
+                "request": request,
+                "stats": _EMPTY_STATS,
+                "recent": [],
+                "error": _STATS_UNAVAILABLE,
+            },
+            status_code=503,
+        )
 
     recent = [
         {
@@ -228,5 +281,6 @@ def stats(request: Request):
             "request": request,
             "stats": stats_data,
             "recent": recent,
+            "error": None,
         },
     )

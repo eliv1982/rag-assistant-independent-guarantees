@@ -3,6 +3,7 @@
 Управляет потоком: запрос -> кеш -> vector search -> LLM -> ответ -> кеш.
 """
 
+import hashlib
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -11,14 +12,24 @@ from dotenv import load_dotenv
 
 try:
     from .cache import RAGCache
-    from .corpus_config import default_corpus_entries
-    from .openai_client import get_openai_client
+    from .corpus_config import (
+        collection_name_for,
+        compute_corpus_id,
+        default_corpus_entries,
+        single_file_entry,
+    )
+    from .openai_client import api_key_configured, get_openai_client
     from .retrieval_utils import deduplicate_context_docs
     from .vector_store import VectorStore
 except ImportError:
     from cache import RAGCache
-    from corpus_config import default_corpus_entries
-    from openai_client import get_openai_client
+    from corpus_config import (
+        collection_name_for,
+        compute_corpus_id,
+        default_corpus_entries,
+        single_file_entry,
+    )
+    from openai_client import api_key_configured, get_openai_client
     from retrieval_utils import deduplicate_context_docs
     from vector_store import VectorStore
 
@@ -38,15 +49,26 @@ LEGAL_SYSTEM_PROMPT = (
     "формулируй осторожно, если контекст неполный."
 )
 
-PROMPT_INSTRUCTIONS = """- Отвечай только на основании найденного контекста. Если данных недостаточно, прямо укажи, чего не хватает (например, нет статьи ГК или нет позиции суда).
+PROMPT_INTRO = (
+    "Ты помогаешь разбирать вопросы по независимым гарантиям с опорой на фрагменты ГК РФ, "
+    "Федеральных законов № 44-ФЗ и № 223-ФЗ, постановлений Правительства РФ № 1005 и № 1397 "
+    "и обзоров судебной практики ВС РФ."
+)
+
+PROMPT_INSTRUCTIONS = """- Отвечай только на основании найденного контекста. Если данных недостаточно, прямо укажи, чего не хватает (например, нет нужной статьи, пункта постановления или позиции суда).
 - Если вопрос просит «способы», «основания», «случаи», «условия», «перечень» или похожий список — сначала дай нумерованный список всех элементов из контекста.
 - Если в контексте есть статья или пункт с явным перечнем оснований, условий, случаев или иных элементов, извлеки все элементы перечня полностью; не заменяй их общим пересказом одной фразой.
-- Для российских правовых вопросов при наличии ГК РФ в контексте приоритизируй нормы ГК РФ; международные правила вроде URDG указывай отдельно.
-- Если в контексте одновременно есть ГК РФ и URDG, структурируй ответ блоками: «По ГК РФ», «По URDG», «Коротко».
-- Для каждого существенного тезиса укажи источник: «ГК РФ», «URDG» или «обзор практики ВС» — по тому, из какого фрагмента он взят.
-- Если во фрагментах есть разные уровни регулирования (закон vs договорная подчинённость URDG vs обобщение судебной практики), не смешивай их молча.
-- Не придумывай номера статей, дел и цитат, которых нет во фрагментах. Не делай юридическую консультацию и не выдумывай нормы вне контекста.
+- Различай уровни регулирования: ГК РФ — общие нормы о независимой гарантии; 44-ФЗ и 223-ФЗ — специальные нормы о закупках; постановления Правительства РФ № 1005 и № 1397 — требования, реестры и типовые формы; обзоры практики ВС РФ — толкование и применение норм. Не смешивай уровни молча.
+- Если в контексте есть нормы нескольких уровней, структурируй ответ блоками по источникам («По ГК РФ», «По 44-ФЗ / 223-ФЗ», «По постановлениям Правительства РФ», «По практике ВС РФ») и добавь блок «Коротко»; блоки, для которых нет фрагментов, пропускай.
+- Для каждого существенного тезиса укажи источник — по тому, из какого фрагмента он взят (закон, постановление или обзор; статья, пункт или позиция).
+- Если во фрагменте указано, что норма утратила силу, не применяй её как действующую: сообщи, что она утратила силу, и приведи реквизиты из фрагмента.
+- Не придумывай номера статей, пунктов, дел и цитат, которых нет во фрагментах. Не делай юридическую консультацию и не выдумывай нормы вне контекста.
 - Ответ на русском языке; структурируй списком, если это улучшает ясность."""
+
+# Версия промпта входит в ключ кеша: после правки промпта старые ответы не отдаются.
+PROMPT_VERSION = hashlib.sha256(
+    "\n".join((LEGAL_SYSTEM_PROMPT, PROMPT_INTRO, PROMPT_INSTRUCTIONS)).encode("utf-8")
+).hexdigest()[:8]
 
 
 def _normalize_cached_context(raw: Any) -> Optional[List[Dict[str, Any]]]:
@@ -74,14 +96,19 @@ class RAGPipeline:
 
     def __init__(
         self,
-        collection_name: str = "rag_collection",
+        collection_name: Optional[str] = None,
         cache_db_path: Optional[str] = None,
         persist_directory: Optional[str] = None,
         corpus_entries: Optional[List[Dict[str, Any]]] = None,
         data_file: Optional[str] = None,
         model: Optional[str] = None,
     ):
-        if not os.getenv("OPENAI_API_KEY"):
+        """
+        Пути и имя коллекции по умолчанию берутся из окружения и корпуса:
+        RAG_CHROMA_PATH, RAG_CACHE_DB_PATH; коллекция называется guarantees_<corpus_id>,
+        поэтому изменённый корпус индексируется заново, а не подмешивается к старому индексу.
+        """
+        if not api_key_configured():
             raise ValueError("OPENAI_API_KEY не установлен")
 
         self._base_dir = Path(__file__).resolve().parent
@@ -92,11 +119,25 @@ class RAGPipeline:
 
         self.openai_client = get_openai_client()
 
-        if persist_directory is None:
-            persist_directory = os.getenv("RAG_CHROMA_PATH", str(self._base_dir / "chroma_db"))
-        if cache_db_path is None:
-            cache_db_path = str(self._base_dir / "api_rag_cache.db")
+        if corpus_entries is None:
+            if data_file:
+                data_path = Path(data_file)
+                if not data_path.is_absolute():
+                    data_path = (self._base_dir / data_path).resolve()
+                corpus_entries = [single_file_entry(data_path)]
+            else:
+                corpus_entries = default_corpus_entries()
 
+        self.corpus_id = compute_corpus_id(corpus_entries, base_dir=self._base_dir)
+        if collection_name is None:
+            collection_name = collection_name_for(self.corpus_id)
+
+        if persist_directory is None:
+            persist_directory = os.getenv("RAG_CHROMA_PATH") or str(self._base_dir / "chroma_db")
+        if cache_db_path is None:
+            cache_db_path = os.getenv("RAG_CACHE_DB_PATH") or str(self._base_dir / "api_rag_cache.db")
+
+        print(f"Корпус: {len(corpus_entries)} источников, corpus_id={self.corpus_id}")
         print("Инициализация векторного хранилища...")
         self.vector_store = VectorStore(
             collection_name=collection_name,
@@ -104,20 +145,17 @@ class RAGPipeline:
         )
 
         if self.vector_store.collection.count() == 0:
-            if corpus_entries is not None:
-                print("Загрузка корпуса (несколько источников)...")
-                self.vector_store.load_corpus(corpus_entries, base_dir=self._base_dir)
-            elif data_file:
-                print(f"Загрузка документов из {data_file}...")
-                self.vector_store.load_documents(data_file, base_dir=self._base_dir)
-            else:
-                print("Загрузка корпуса по умолчанию (ГК РФ, URDG, обзор ВС)...")
-                self.vector_store.load_corpus(default_corpus_entries(), base_dir=self._base_dir)
+            print("Загрузка корпуса...")
+            self.vector_store.load_corpus(corpus_entries, base_dir=self._base_dir)
 
         print("Инициализация кеша...")
-        self.cache = RAGCache(db_path=cache_db_path)
+        self.cache = RAGCache(db_path=cache_db_path, namespace=self._cache_namespace())
 
         print("RAG Pipeline инициализирован (API mode)")
+
+    def _cache_namespace(self) -> str:
+        """Всё, от чего зависит ответ, кроме текста вопроса."""
+        return f"{self.corpus_id}|{self.model}|{self.top_k}|{PROMPT_VERSION}"
 
     def _format_context_block(self, doc: Dict[str, Any], index: int) -> str:
         meta = doc.get("metadata") or {}
@@ -136,7 +174,7 @@ class RAGPipeline:
         parts = [self._format_context_block(d, i) for i, d in enumerate(context_docs, start=1)]
         context = "\n---\n".join(parts)
 
-        return f"""Ты помогаешь разбирать вопросы по независимым гарантиям с опорой на фрагменты норм (ГК РФ), правил URDG (если есть в контексте) и обзоров судебной практики ВС РФ.
+        return f"""{PROMPT_INTRO}
 
 Фрагменты базы знаний:
 {context}
@@ -227,6 +265,7 @@ class RAGPipeline:
             "top_k": self.top_k,
             "max_tokens": self.max_tokens,
             "corpus_version": os.getenv("RAG_CORPUS_VERSION", "1"),
+            "corpus_id": self.corpus_id,
         }
 
 
@@ -238,7 +277,7 @@ if __name__ == "__main__":
 
         test_queries = [
             "Когда независимая гарантия вступает в силу по ГК РФ?",
-            "Что такое надлежащее представление по URDG?",
+            "Какие основания для отказа заказчика в принятии независимой гарантии предусмотрены 44-ФЗ?",
             "Может ли гарант ссылаться на основное обязательство при отказе бенефициару?",
         ]
 

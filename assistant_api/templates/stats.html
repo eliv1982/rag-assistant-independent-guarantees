@@ -19,6 +19,10 @@
             <a href="/">← На главную</a>
         </nav>
 
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+
         <section class="metrics-grid">
             <div class="metric-card">
                 <span class="metric-value">{{ stats.total_interactions }}</span>

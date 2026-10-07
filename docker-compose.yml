@@ -3,8 +3,19 @@ services:
     container_name: rag-guarantees
     build: .
     env_file: .env
+    # Пути хранилища в контейнере задаются здесь, а не в .env: `environment` приоритетнее
+    # `env_file`, поэтому локальные значения из .env не попадут в контейнер.
+    environment:
+      LOGS_DB_PATH: /app/runtime/logs.db
+      RAG_CHROMA_PATH: /app/runtime/chroma_db
+      RAG_CACHE_DB_PATH: /app/runtime/api_rag_cache.db
     ports:
-      - "8010:8000"
+      # Только localhost. Для публикации в сеть используйте reverse proxy с авторизацией.
+      - "127.0.0.1:8010:8000"
     restart: unless-stopped
     volumes:
-      - ./runtime:/app/runtime
+      # Именованный том: журнал, индекс Chroma и кеш переживают пересборку и пересоздание контейнера.
+      - rag_runtime:/app/runtime
+
+volumes:
+  rag_runtime:

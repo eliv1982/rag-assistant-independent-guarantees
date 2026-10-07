@@ -1,0 +1,18 @@
+# Quality evaluation via RAGAS (assistant_api/evaluate_ragas.py). Not part of the Docker image.
+# Keep this file ASCII-only.
+-r requirements.txt
+
+datasets>=2.14.0
+pandas>=2.0.0
+numpy>=2.0.0
+
+# Versions compatible with Python 3.11 and RAGAS
+pydantic>=2.0.0,<3.0.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+# Verified pair. langchain-community 0.4.2 removed chat_models.vertexai, which ragas 0.4.x imports.
+langchain-community==0.4.1
+# With an open-ended `ragas>=0.2.0` pip backtracks to ragas 0.3.1 (the newest openai
+# conflicts with instructor), which does not import.
+ragas==0.4.3

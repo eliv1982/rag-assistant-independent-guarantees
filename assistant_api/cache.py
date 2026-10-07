@@ -23,18 +23,25 @@ else:
 class RAGCache:
     """Кеш для хранения результатов RAG запросов."""
     
-    def __init__(self, db_path: str = "rag_cache.db"):
+    def __init__(self, db_path: str = "rag_cache.db", namespace: Optional[str] = None):
         """
         Инициализация кеша.
-        
+
         Args:
             db_path: путь к файлу базы данных SQLite
+            namespace: всё, от чего зависит ответ, кроме самого вопроса (отпечаток корпуса,
+                модель, промпт). Входит в ключ кеша: при изменении старые ответы не отдаются.
+                По умолчанию — только RAG_CORPUS_VERSION.
         """
         self.db_path = db_path
+        self.namespace = namespace
         self._init_db()
-    
+
     def _init_db(self):
         """Создание таблицы кеша, если она не существует."""
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -54,12 +61,15 @@ class RAGCache:
     def _get_query_hash(self, query: str) -> str:
         """
         Вычисление хеша запроса для использования как ключ кеша.
-        Версия корпуса RAG_CORPUS_VERSION включается в ключ, чтобы после переиндексации
-        не отдавать устаревшие ответы при том же тексте вопроса.
+        В ключ входит namespace (отпечаток корпуса, модель, промпт), чтобы после изменения
+        корпуса или промпта не отдавать устаревшие ответы при том же тексте вопроса.
+        Без namespace используется RAG_CORPUS_VERSION.
         """
-        corpus_version = os.getenv("RAG_CORPUS_VERSION", "1")
+        namespace = self.namespace
+        if namespace is None:
+            namespace = os.getenv("RAG_CORPUS_VERSION", "1")
         normalized_query = " ".join(query.lower().strip().split())
-        payload = f"{corpus_version}||{normalized_query}"
+        payload = f"{namespace}||{normalized_query}"
         return hashlib.sha256(payload.encode()).hexdigest()
     
     def get(self, query: str) -> Optional[Dict[str, Any]]:

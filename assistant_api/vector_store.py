@@ -14,8 +14,10 @@ from dotenv import load_dotenv
 from openai import APIConnectionError, APITimeoutError
 
 try:
+    from .corpus_config import index_settings
     from .openai_client import get_openai_client
 except ImportError:
+    from corpus_config import index_settings
     from openai_client import get_openai_client
 
 env_path = Path(__file__).parent.parent / ".env"
@@ -55,10 +57,11 @@ class VectorStore:
             print(f"Создана новая коллекция '{collection_name}'")
 
         self.openai_client = get_openai_client()
-        self.embedding_model = os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small")
-        self.chunk_size = int(os.getenv("RAG_CHUNK_SIZE", "800"))
-        self.chunk_overlap = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
-        self.min_chunk_len = int(os.getenv("RAG_MIN_CHUNK_LEN", "80"))
+        settings = index_settings()
+        self.embedding_model = settings["embedding_model"]
+        self.chunk_size = settings["chunk_size"]
+        self.chunk_overlap = settings["chunk_overlap"]
+        self.min_chunk_len = settings["min_chunk_len"]
 
     def _split_sentences(self, text: str) -> List[str]:
         try:
@@ -158,7 +161,8 @@ class VectorStore:
     def _kind_label(self, source_kind: str) -> str:
         return {
             "law": "закон РФ",
-            "rules": "правила (URDG)",
+            "procurement_law": "закон о закупках",
+            "government_resolution": "постановление Правительства РФ",
             "case_law_summary": "обзор судебной практики",
         }.get(source_kind, source_kind)
 
@@ -272,17 +276,32 @@ class VectorStore:
 
         ids = [f"doc_{i}" for i in range(len(documents))]
         batch = 100
-        for start in range(0, len(documents), batch):
-            end = min(start + batch, len(documents))
-            self.collection.add(
-                ids=ids[start:end],
-                documents=documents[start:end],
-                embeddings=embeddings[start:end],
-                metadatas=metadatas[start:end],
-            )
-            print(f"  В Chroma записано {end}/{len(documents)}")
+        try:
+            for start in range(0, len(documents), batch):
+                end = min(start + batch, len(documents))
+                self.collection.add(
+                    ids=ids[start:end],
+                    documents=documents[start:end],
+                    embeddings=embeddings[start:end],
+                    metadatas=metadatas[start:end],
+                )
+                print(f"  В Chroma записано {end}/{len(documents)}")
+        except BaseException:
+            # Частично записанная коллекция при следующем запуске выглядела бы как «уже загруженная».
+            self._reset_collection()
+            raise
 
         print(f"Загружено {len(documents)} фрагментов в '{self.collection_name}'")
+
+    def _reset_collection(self) -> None:
+        """Пересоздать пустую коллекцию с теми же параметрами."""
+        try:
+            self.client.delete_collection(name=self.collection_name)
+        finally:
+            self.collection = self.client.create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"},
+            )
 
     def load_documents(self, file_path: str, base_dir: Optional[Path] = None) -> None:
         """Обратная совместимость: один файл как корпус из одного источника."""

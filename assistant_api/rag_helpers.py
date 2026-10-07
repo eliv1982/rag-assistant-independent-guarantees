@@ -3,8 +3,7 @@
 """
 
 import os
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import bleach
 import markdown
@@ -13,8 +12,6 @@ try:
     from .rag_pipeline import RAGPipeline
 except ImportError:
     from rag_pipeline import RAGPipeline
-
-_BASE_DIR = Path(__file__).resolve().parent
 
 _ALLOWED_TAGS = [
     "p",
@@ -57,13 +54,11 @@ def render_markdown_safe(text: str) -> str:
 
 
 def create_rag_pipeline() -> RAGPipeline:
-    """Создание RAG pipeline с теми же параметрами, что и в CLI."""
-    return RAGPipeline(
-        collection_name="api_rag_collection",
-        cache_db_path=str(_BASE_DIR / "api_rag_cache.db"),
-        persist_directory=os.getenv("RAG_CHROMA_PATH", str(_BASE_DIR / "chroma_db")),
-        model=os.getenv("RAG_CHAT_MODEL", "gpt-4o-mini"),
-    )
+    """
+    Создание RAG pipeline для CLI и web.
+    Пути (RAG_CHROMA_PATH, RAG_CACHE_DB_PATH) и имя коллекции определяет сам RAGPipeline.
+    """
+    return RAGPipeline(model=os.getenv("RAG_CHAT_MODEL", "gpt-4o-mini"))
 
 
 def interaction_log_fields(result: Any, pipeline: RAGPipeline) -> Dict[str, Any]:

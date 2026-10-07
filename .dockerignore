@@ -1,12 +1,35 @@
-venv/
-__pycache__/
-*.pyc
-.git/
+# Секреты и локальное окружение
 .env
+.env.*
+venv/
+venv_py311/
+.venv/
+
+# Данные, собранные локально: в образ не попадают (индекс и кеш создаются в томе /app/runtime)
+assistant_api/chroma_db/
+assistant_api/*.db
+runtime/
 *.db
 *.sqlite
 *.csv
-runtime/
+*.log
+
+# Не нужно для запуска
+.git/
+.github/
+tests/
+screenshots/
+*.md
+requirements-dev.txt
+requirements-eval.txt
+установка python 3-11.txt
+
+# Кеши и мусор
+**/__pycache__/
+**/*.pyc
 .pytest_cache/
+.ruff_cache/
 .mypy_cache/
+.idea/
+.vscode/
 .DS_Store

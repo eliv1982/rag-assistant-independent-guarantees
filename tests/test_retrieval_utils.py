@@ -16,7 +16,7 @@ class TestDeduplicateContextDocs(unittest.TestCase):
         docs = [
             {"text": "Статья 378. Основания прекращения", "metadata": {"source": "gk_rf"}},
             {"text": "Статья 378. Основания прекращения", "metadata": {"source": "gk_rf"}},
-            {"text": "Article 25 URDG", "metadata": {"source": "urdg"}},
+            {"text": "Статья 45 44-ФЗ об условиях независимой гарантии", "metadata": {"source": "fz_44_art_45"}},
         ]
         result = deduplicate_context_docs(docs)
         self.assertEqual(len(result), 2)
@@ -27,7 +27,7 @@ class TestDeduplicateContextDocs(unittest.TestCase):
         docs = [
             {"text": "Статья 378 ГК РФ о прекращении гарантии"},
             {"text": "Статья 370 ГК РФ об изменении гарантии"},
-            {"content": "Article 25 URDG about expiry"},
+            {"content": "Часть 6 статьи 45 44-ФЗ об основаниях отказа в принятии гарантии"},
         ]
         result = deduplicate_context_docs(docs)
         self.assertEqual(len(result), 3)

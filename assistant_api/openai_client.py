@@ -9,10 +9,20 @@ from typing import Optional
 from openai import OpenAI
 
 
+# Значение из .env.example: после «cp .env.example .env» без правки ключа это не настоящий ключ.
+_PLACEHOLDER_API_KEYS = frozenset({"your_openai_api_key_here"})
+
+
+def api_key_configured() -> bool:
+    """Задан ли настоящий OPENAI_API_KEY (пустое значение и заглушка из .env.example не считаются)."""
+    key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    return bool(key) and key not in _PLACEHOLDER_API_KEYS
+
+
 def get_openai_client() -> OpenAI:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    if not api_key_configured():
         raise ValueError("OPENAI_API_KEY не установлен")
+    api_key = os.environ["OPENAI_API_KEY"].strip()
     timeout = float(os.getenv("OPENAI_TIMEOUT", "180"))
     max_retries = int(os.getenv("OPENAI_MAX_RETRIES", "5"))
     base_url: Optional[str] = (os.getenv("OPENAI_BASE_URL") or "").strip() or None

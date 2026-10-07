@@ -1,0 +1,8 @@
+# Development and tests: runtime + what only the tests need. Keep this file ASCII-only.
+-r requirements.txt
+
+# fastapi.testclient.TestClient (Starlette) requires httpx
+httpx>=0.27.0
+
+# Lint (CI runs only: ruff check . --select E4,E7,E9,F)
+ruff==0.16.10
