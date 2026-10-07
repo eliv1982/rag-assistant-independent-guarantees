@@ -1,10 +1,9 @@
 """
 Модуль работы с векторным хранилищем ChromaDB.
-Загрузка нескольких источников с метаданными, нарезка по статьям (нормативка) и по смыслу (обзоры).
+Загрузка нескольких источников с метаданными; нарезка с учётом структуры источника — см. chunking.py.
 """
 
 import os
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,9 +13,11 @@ from dotenv import load_dotenv
 from openai import APIConnectionError, APITimeoutError
 
 try:
+    from .chunking import ChunkingConfig, build_chunks, kind_label
     from .corpus_config import index_settings
     from .openai_client import get_openai_client
 except ImportError:
+    from chunking import ChunkingConfig, build_chunks, kind_label
     from corpus_config import index_settings
     from openai_client import get_openai_client
 
@@ -25,10 +26,6 @@ if env_path.exists():
     load_dotenv(env_path)
 else:
     load_dotenv()
-
-_STATUTE_BOUNDARY = re.compile(
-    r"(?m)^(?=(?:§\s*\d+(?:\.\d+)?[\.\s]|Статья\s+\d+))"
-)
 
 
 class VectorStore:
@@ -63,108 +60,8 @@ class VectorStore:
         self.chunk_overlap = settings["chunk_overlap"]
         self.min_chunk_len = settings["min_chunk_len"]
 
-    def _split_sentences(self, text: str) -> List[str]:
-        try:
-            from pysbd import Segmenter
-
-            segmenter = Segmenter(language="ru", clean=False)
-            return [s.strip() for s in segmenter.segment(text) if s.strip()]
-        except Exception:
-            return self._split_sentences_regex(text)
-
-    def _split_sentences_regex(self, text: str) -> List[str]:
-        parts = re.split(r"([.!?]+\s+)", text)
-        full: List[str] = []
-        i = 0
-        while i < len(parts):
-            if i + 1 < len(parts):
-                full.append((parts[i] + parts[i + 1]).strip())
-                i += 2
-            else:
-                if parts[i].strip():
-                    full.append(parts[i].strip())
-                i += 1
-        return [s for s in full if s]
-
-    def _get_overlap_text(self, text: str, overlap_size: int) -> str:
-        if len(text) <= overlap_size:
-            return text
-        overlap_candidate = text[-overlap_size:]
-        sentence_starts = [". ", "! ", "? ", "\n"]
-        best_start = 0
-        for delimiter in sentence_starts:
-            pos = overlap_candidate.find(delimiter)
-            if pos != -1 and pos > best_start:
-                best_start = pos + len(delimiter)
-        if best_start > 0:
-            return overlap_candidate[best_start:].strip()
-        return overlap_candidate.strip()
-
-    def _split_long_block(self, paragraph: str, chunk_size: int, overlap: int) -> List[str]:
-        sentences = self._split_sentences(paragraph)
-        chunks: List[str] = []
-        current = ""
-        for sentence in sentences:
-            if len(current) + len(sentence) + 1 <= chunk_size:
-                current = (current + " " + sentence).strip() if current else sentence
-            else:
-                if current:
-                    chunks.append(current)
-                    overlap_text = self._get_overlap_text(current, overlap)
-                    current = (overlap_text + " " + sentence).strip() if overlap_text else sentence
-                else:
-                    current = sentence
-        if current:
-            chunks.append(current)
-        return chunks
-
-    def _chunk_semantic(self, text: str, chunk_size: int, overlap: int) -> List[str]:
-        paragraphs = text.split("\n\n")
-        chunks: List[str] = []
-        current = ""
-        for paragraph in paragraphs:
-            paragraph = paragraph.strip()
-            if not paragraph:
-                continue
-            if len(current) + len(paragraph) + 2 <= chunk_size:
-                current = current + "\n\n" + paragraph if current else paragraph
-            elif current:
-                chunks.append(current)
-                overlap_text = self._get_overlap_text(current, overlap)
-                current = overlap_text + "\n\n" + paragraph if overlap_text else paragraph
-            else:
-                if len(paragraph) > chunk_size:
-                    sent_chunks = self._split_long_block(paragraph, chunk_size, overlap)
-                    if sent_chunks:
-                        chunks.extend(sent_chunks[:-1])
-                        current = sent_chunks[-1]
-                else:
-                    current = paragraph
-        if current:
-            chunks.append(current)
-        return [c for c in chunks if len(c) >= self.min_chunk_len]
-
-    def _split_statute_sections(self, text: str) -> List[str]:
-        parts = _STATUTE_BOUNDARY.split(text)
-        parts = [p.strip() for p in parts if p.strip()]
-        if len(parts) <= 1:
-            stripped = text.strip()
-            return [stripped] if stripped else []
-        return parts
-
-    def _section_heading(self, section: str, max_len: int = 160) -> str:
-        line = section.strip().split("\n", 1)[0].strip()
-        if len(line) > max_len:
-            return line[:max_len] + "…"
-        return line
-
     def _kind_label(self, source_kind: str) -> str:
-        return {
-            "law": "закон РФ",
-            "procurement_law": "закон о закупках",
-            "government_resolution": "постановление Правительства РФ",
-            "case_law_summary": "обзор судебной практики",
-        }.get(source_kind, source_kind)
+        return kind_label(source_kind)
 
     def _build_chunks_for_file(
         self,
@@ -173,57 +70,22 @@ class VectorStore:
         source_display: str,
         source_kind: str,
         doc_type: str,
-    ) -> List[Tuple[str, Dict[str, str]]]:
-        chunk_size = self.chunk_size
-        overlap = self.chunk_overlap
-        kind_label = self._kind_label(source_kind)
-
-        if doc_type == "statute":
-            sections = self._split_statute_sections(text)
-        else:
-            sections = [text.strip()] if text.strip() else []
-
-        out: List[Tuple[str, Dict[str, str]]] = []
-        for section in sections:
-            heading = self._section_heading(section)
-            if len(section) <= chunk_size:
-                body = section
-                meta = {
-                    "source": source,
-                    "source_display": source_display,
-                    "source_kind": source_kind,
-                    "doc_type": doc_type,
-                    "section_heading": heading,
-                    "subchunk_index": "",
-                }
-                doc_text = (
-                    f"[Источник: {source_display} | {kind_label}]\n"
-                    f"[Фрагмент: {heading}]\n\n{body}"
-                )
-                if len(doc_text) >= self.min_chunk_len:
-                    out.append((doc_text, meta))
-                continue
-
-            subchunks = self._chunk_semantic(section, chunk_size, overlap)
-            for i, sub in enumerate(subchunks):
-                body = sub.strip()
-                if len(body) < self.min_chunk_len:
-                    continue
-                enriched = f"{heading}\n\n{body}"
-                meta = {
-                    "source": source,
-                    "source_display": source_display,
-                    "source_kind": source_kind,
-                    "doc_type": doc_type,
-                    "section_heading": heading,
-                    "subchunk_index": str(i),
-                }
-                doc_text = (
-                    f"[Источник: {source_display} | {kind_label}]\n"
-                    f"[Фрагмент: {heading}]\n\n{enriched}"
-                )
-                out.append((doc_text, meta))
-        return out
+        chunker: str = "generic",
+        citation: Optional[str] = None,
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        """Нарезка одного источника по его структуре: список (текст для индекса, метаданные)."""
+        config = ChunkingConfig(self.chunk_size, self.chunk_overlap, self.min_chunk_len)
+        chunks = build_chunks(
+            text,
+            source=source,
+            source_display=source_display,
+            source_kind=source_kind,
+            doc_type=doc_type,
+            chunker=chunker,
+            citation=citation,
+            config=config,
+        )
+        return [(chunk.text, chunk.metadata) for chunk in chunks]
 
     def _resolve_path(self, path: Path, base_dir: Path) -> Path:
         p = Path(path)
@@ -238,14 +100,14 @@ class VectorStore:
     ) -> None:
         """
         Загрузка нескольких файлов с метаданными. Пропускает загрузку, если коллекция не пуста.
-        corpus_entries: path (Path | str), source, source_display, source_kind, doc_type
+        corpus_entries: path (Path | str), source, source_display, source_kind, doc_type, chunker, citation
         """
         if self.collection.count() > 0:
             print("Документы уже загружены в коллекцию")
             return
 
         base = base_dir or Path(__file__).resolve().parent
-        all_rows: List[Tuple[str, Dict[str, str]]] = []
+        all_rows: List[Tuple[str, Dict[str, Any]]] = []
 
         for entry in corpus_entries:
             raw_path = entry["path"]
@@ -262,6 +124,8 @@ class VectorStore:
                 source_display=str(entry["source_display"]),
                 source_kind=str(entry.get("source_kind", "unknown")),
                 doc_type=str(entry.get("doc_type", "overview")),
+                chunker=str(entry.get("chunker", "generic")),
+                citation=entry.get("citation"),
             )
             print(f"  {path.name}: {len(rows)} чанков")
             all_rows.extend(rows)

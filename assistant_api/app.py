@@ -10,6 +10,7 @@ from typing import Any, Dict
 
 from dotenv import load_dotenv
 from db_logger import DatabaseLogger, get_logs_db_path
+from chunking import source_label
 from openai_client import api_key_configured
 from rag_pipeline import RAGPipeline
 
@@ -53,6 +54,11 @@ def print_response(result: dict):
         print("💾 Источник: КЕШ")
         if 'cached_at' in result:
             print(f"   Сохранено: {result['cached_at']}")
+    elif result.get('no_evidence'):
+        evidence = result.get('evidence') or {}
+        print("🚫 Недостаточно данных в корпусе: чат-модель не вызывалась")
+        if evidence.get('max_distance') is not None:
+            print(f"   Лучшее косинусное расстояние: {evidence.get('best_distance')}, порог: {evidence.get('max_distance')}")
     else:
         print(f"🌐 Источник: OpenAI API ({result.get('model', 'LLM')})")
         print(f"   Использовано документов: {len(result.get('context_docs', []))}")
@@ -71,7 +77,7 @@ def print_response(result: dict):
         for i, doc in enumerate(docs, 1):
             text = doc["text"] if isinstance(doc, dict) else str(doc)
             meta = doc.get("metadata", {}) if isinstance(doc, dict) else {}
-            label = meta.get("source_display", "")
+            label = source_label(meta) if meta else ""
             heading = (meta.get("section_heading") or "").strip()
             if len(text) > preview_chars:
                 preview = text[:preview_chars].rstrip() + "…"
@@ -99,7 +105,7 @@ def _interaction_log_fields(
         return {
             "response": str(result.get("answer", "")),
             "from_cache": bool(result.get("from_cache", False)),
-            "model": result.get("model") or pipeline.model,
+            "model": None if result.get("no_evidence") else (result.get("model") or pipeline.model),
             "top_k": pipeline.top_k,
             "sources_count": sources_count,
         }

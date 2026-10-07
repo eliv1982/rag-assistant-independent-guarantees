@@ -41,7 +41,7 @@ class TestDefaultCorpus(unittest.TestCase):
         entries = default_corpus_entries()
         self.assertEqual(len({e["source"] for e in entries}), len(entries))
         for entry in entries:
-            for key in ("path", "source", "source_display", "source_kind", "doc_type"):
+            for key in ("path", "source", "source_display", "source_kind", "doc_type", "chunker", "citation"):
                 self.assertTrue(entry.get(key), f"{entry.get('source')}: нет {key}")
             self.assertIn(entry["doc_type"], {"statute", "overview"})
 
@@ -95,6 +95,8 @@ class TestChunkingDryRun(unittest.TestCase):
                         source_display=entry["source_display"],
                         source_kind=entry["source_kind"],
                         doc_type=entry["doc_type"],
+                        chunker=entry["chunker"],
+                        citation=entry["citation"],
                     )
                     self.assertGreater(len(chunks), 0, entry["source"])
                     all_chunks[entry["source"]] = chunks
@@ -165,6 +167,21 @@ class TestCorpusId(unittest.TestCase):
         ):
             changed = dict(base, **{key: value})
             self.assertNotEqual(before, compute_corpus_id(self.entries, settings=changed), key)
+
+    def test_changes_when_chunking_strategy_or_citation_changes(self):
+        before = compute_corpus_id(self.entries)
+        self.entries[0]["chunker"] = "civil_code"
+        with_chunker = compute_corpus_id(self.entries)
+        self.assertNotEqual(before, with_chunker)
+        self.entries[0]["citation"] = "ГК РФ"
+        self.assertNotEqual(with_chunker, compute_corpus_id(self.entries))
+
+    def test_defaults_are_explicit_generic_chunker_and_source_display(self):
+        explicit = [dict(e, chunker="generic", citation=e["source_display"]) for e in self.entries]
+        self.assertEqual(compute_corpus_id(self.entries), compute_corpus_id(explicit))
+
+    def test_index_schema_version_covers_structure_aware_chunking(self):
+        self.assertGreaterEqual(corpus_config.INDEX_SCHEMA_VERSION, 2)
 
     def test_changes_with_manual_corpus_version(self):
         with mock.patch.dict(os.environ, {"RAG_CORPUS_VERSION": "1"}):

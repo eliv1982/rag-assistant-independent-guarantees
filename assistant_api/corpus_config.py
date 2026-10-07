@@ -16,9 +16,10 @@ from typing import Any, Dict, List, Optional
 ASSISTANT_DIR = Path(__file__).resolve().parent
 DATA_DIR = ASSISTANT_DIR / "data"
 
-# Увеличивайте при изменении логики нарезки или метаданных в vector_store.py,
-# чтобы существующие индексы не использовались повторно.
-INDEX_SCHEMA_VERSION = 1
+# Увеличивайте при изменении логики нарезки или метаданных (chunking.py, chunk_splitter.py,
+# vector_store.py), чтобы существующие индексы не использовались повторно.
+# 2: нарезка с учётом структуры источника (статья/часть/пункт/позиция), узкие метаданные.
+INDEX_SCHEMA_VERSION = 2
 
 COLLECTION_PREFIX = "guarantees"
 _CORPUS_ID_LEN = 12
@@ -28,8 +29,9 @@ def default_corpus_entries() -> List[Dict[str, Any]]:
     """
     Семь источников: ГК РФ (ст. 368–379), 44-ФЗ (ст. 45), 223-ФЗ (ст. 3.4),
     постановления Правительства РФ № 1005 и № 1397, два обзора практики ВС РФ.
-    doc_type: statute — нарезка по статьям/параграфам, затем по смыслу; overview — смысловые чанки.
-    Подробности о составе и политике корпуса: data/README.md.
+    doc_type: statute (нормативный акт) или overview (обзор практики).
+    chunker — стратегия нарезки по структуре источника (см. chunking.py), citation — как источник
+    называется в узкой ссылке («44-ФЗ, ст. 45, ч. 6»). Подробности о составе корпуса: data/README.md.
     """
     return [
         {
@@ -38,6 +40,8 @@ def default_corpus_entries() -> List[Dict[str, Any]]:
             "source_display": "ГК РФ, ст. 368–379",
             "source_kind": "law",
             "doc_type": "statute",
+            "chunker": "civil_code",
+            "citation": "ГК РФ",
         },
         {
             "path": DATA_DIR / "44FZ_article_45.txt",
@@ -45,6 +49,8 @@ def default_corpus_entries() -> List[Dict[str, Any]]:
             "source_display": "44-ФЗ, ст. 45",
             "source_kind": "procurement_law",
             "doc_type": "statute",
+            "chunker": "federal_law",
+            "citation": "44-ФЗ",
         },
         {
             "path": DATA_DIR / "223FZ_article_3_4_guarantees.txt",
@@ -52,6 +58,8 @@ def default_corpus_entries() -> List[Dict[str, Any]]:
             "source_display": "223-ФЗ, ст. 3.4",
             "source_kind": "procurement_law",
             "doc_type": "statute",
+            "chunker": "federal_law",
+            "citation": "223-ФЗ",
         },
         {
             "path": DATA_DIR / "PP_1005.txt",
@@ -59,6 +67,8 @@ def default_corpus_entries() -> List[Dict[str, Any]]:
             "source_display": "Постановление Правительства РФ № 1005",
             "source_kind": "government_resolution",
             "doc_type": "statute",
+            "chunker": "government_resolution",
+            "citation": "ПП РФ №1005",
         },
         {
             "path": DATA_DIR / "PP_1397.txt",
@@ -66,6 +76,8 @@ def default_corpus_entries() -> List[Dict[str, Any]]:
             "source_display": "Постановление Правительства РФ № 1397",
             "source_kind": "government_resolution",
             "doc_type": "statute",
+            "chunker": "government_resolution",
+            "citation": "ПП РФ №1397",
         },
         {
             "path": DATA_DIR / "VS_independent_guarantee_2019.txt",
@@ -73,6 +85,8 @@ def default_corpus_entries() -> List[Dict[str, Any]]:
             "source_display": "Обзор практики ВС РФ по независимой гарантии (2019)",
             "source_kind": "case_law_summary",
             "doc_type": "overview",
+            "chunker": "court_review",
+            "citation": "Обзор ВС РФ от 05.06.2019",
         },
         {
             "path": DATA_DIR / "VS_contract_system_2017_guarantees.txt",
@@ -80,6 +94,8 @@ def default_corpus_entries() -> List[Dict[str, Any]]:
             "source_display": "Обзор практики ВС РФ по контрактной системе (2017)",
             "source_kind": "case_law_summary",
             "doc_type": "overview",
+            "chunker": "court_review",
+            "citation": "Обзор ВС РФ от 28.06.2017",
         },
     ]
 
@@ -142,6 +158,8 @@ def compute_corpus_id(
             "source_display": entry["source_display"],
             "source_kind": entry.get("source_kind", "unknown"),
             "doc_type": entry.get("doc_type", "overview"),
+            "chunker": entry.get("chunker", "generic"),
+            "citation": entry.get("citation") or entry["source_display"],
         }
         digest.update(json.dumps(meta, sort_keys=True, ensure_ascii=False).encode("utf-8"))
         digest.update(path.read_bytes().replace(b"\r\n", b"\n"))

@@ -6,28 +6,44 @@
 import hashlib
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
 try:
     from .cache import RAGCache
+    from .chunking import source_label
     from .corpus_config import (
         collection_name_for,
         compute_corpus_id,
         default_corpus_entries,
         single_file_entry,
     )
+    from .evidence import (
+        NO_EVIDENCE_ANSWER,
+        EvidenceAssessment,
+        assess_evidence,
+        collection_metric,
+        max_distance_from_env,
+    )
     from .openai_client import api_key_configured, get_openai_client
     from .retrieval_utils import deduplicate_context_docs
     from .vector_store import VectorStore
 except ImportError:
     from cache import RAGCache
+    from chunking import source_label
     from corpus_config import (
         collection_name_for,
         compute_corpus_id,
         default_corpus_entries,
         single_file_entry,
+    )
+    from evidence import (
+        NO_EVIDENCE_ANSWER,
+        EvidenceAssessment,
+        assess_evidence,
+        collection_metric,
+        max_distance_from_env,
     )
     from openai_client import api_key_configured, get_openai_client
     from retrieval_utils import deduplicate_context_docs
@@ -44,7 +60,8 @@ LEGAL_SYSTEM_PROMPT = (
     "Ты — ассистент по вопросам независимых гарантий (банковских и иных). "
     "Отвечай строго на основании переданных фрагментов базы знаний. "
     "Если вопрос просит перечень оснований, способов, случаев или условий — "
-    "извлекай полный перечень из контекста, а не общий пересказ. "
+    "приводи те элементы, которые прямо названы во фрагментах; не дополняй перечень по памяти "
+    "и не называй его исчерпывающим, если фрагменты этого не подтверждают. "
     "Не выдавай юридических заключений и не подменяй консультацию юриста; "
     "формулируй осторожно, если контекст неполный."
 )
@@ -56,11 +73,12 @@ PROMPT_INTRO = (
 )
 
 PROMPT_INSTRUCTIONS = """- Отвечай только на основании найденного контекста. Если данных недостаточно, прямо укажи, чего не хватает (например, нет нужной статьи, пункта постановления или позиции суда).
-- Если вопрос просит «способы», «основания», «случаи», «условия», «перечень» или похожий список — сначала дай нумерованный список всех элементов из контекста.
-- Если в контексте есть статья или пункт с явным перечнем оснований, условий, случаев или иных элементов, извлеки все элементы перечня полностью; не заменяй их общим пересказом одной фразой.
+- Если вопрос просит «способы», «основания», «случаи», «условия», «перечень» или похожий список — перечисли нумерованным списком те элементы, которые прямо названы в найденных фрагментах. Не добавляй элементы, которых во фрагментах нет.
+- Не называй перечень полным (исчерпывающим), если фрагменты не подтверждают его полноту. Если перечень во фрагментах приведён не целиком или оборван, прямо скажи, что список может быть неполным и каких данных не хватает.
+- Если во фрагменте есть статья или пункт с явным перечнем, передавай его элементы так, как они названы в тексте, а не общим пересказом одной фразой — но только в пределах найденного.
 - Различай уровни регулирования: ГК РФ — общие нормы о независимой гарантии; 44-ФЗ и 223-ФЗ — специальные нормы о закупках; постановления Правительства РФ № 1005 и № 1397 — требования, реестры и типовые формы; обзоры практики ВС РФ — толкование и применение норм. Не смешивай уровни молча.
 - Если в контексте есть нормы нескольких уровней, структурируй ответ блоками по источникам («По ГК РФ», «По 44-ФЗ / 223-ФЗ», «По постановлениям Правительства РФ», «По практике ВС РФ») и добавь блок «Коротко»; блоки, для которых нет фрагментов, пропускай.
-- Для каждого существенного тезиса укажи источник — по тому, из какого фрагмента он взят (закон, постановление или обзор; статья, пункт или позиция).
+- Для каждого существенного тезиса укажи источник — по тому, из какого фрагмента он взят, в формате из заголовка фрагмента (например, «44-ФЗ, ст. 45, ч. 6» или «Обзор ВС РФ от 05.06.2019, позиция 11»).
 - Если во фрагменте указано, что норма утратила силу, не применяй её как действующую: сообщи, что она утратила силу, и приведи реквизиты из фрагмента.
 - Не придумывай номера статей, пунктов, дел и цитат, которых нет во фрагментах. Не делай юридическую консультацию и не выдумывай нормы вне контекста.
 - Ответ на русском языке; структурируй списком, если это улучшает ясность."""
@@ -69,6 +87,17 @@ PROMPT_INSTRUCTIONS = """- Отвечай только на основании �
 PROMPT_VERSION = hashlib.sha256(
     "\n".join((LEGAL_SYSTEM_PROMPT, PROMPT_INTRO, PROMPT_INSTRUCTIONS)).encode("utf-8")
 ).hexdigest()[:8]
+
+# finish_reason, при которых ответ модели нельзя выдавать за полный.
+INCOMPLETE_NOTICES = {
+    "length": (
+        "**Внимание:** ответ модели оборван из-за ограничения длины (RAG_MAX_TOKENS) и может быть неполным. "
+        "Не считайте его исчерпывающим; задайте вопрос уже или по частям."
+    ),
+    "content_filter": (
+        "**Внимание:** генерация ответа остановлена фильтром содержимого модели; ответ может быть неполным."
+    ),
+}
 
 
 def _normalize_cached_context(raw: Any) -> Optional[List[Dict[str, Any]]]:
@@ -116,6 +145,9 @@ class RAGPipeline:
         self.top_k = int(os.getenv("RAG_TOP_K", "5"))
         self.max_tokens = int(os.getenv("RAG_MAX_TOKENS", "1500"))
         self.temperature = float(os.getenv("RAG_TEMPERATURE", "0.3"))
+        self.max_distance = max_distance_from_env()
+        self._distance_metric: Optional[str] = None
+        self._metric_resolved = False
 
         self.openai_client = get_openai_client()
 
@@ -155,11 +187,11 @@ class RAGPipeline:
 
     def _cache_namespace(self) -> str:
         """Всё, от чего зависит ответ, кроме текста вопроса."""
-        return f"{self.corpus_id}|{self.model}|{self.top_k}|{PROMPT_VERSION}"
+        return f"{self.corpus_id}|{self.model}|{self.top_k}|{PROMPT_VERSION}|{self.max_distance}"
 
     def _format_context_block(self, doc: Dict[str, Any], index: int) -> str:
         meta = doc.get("metadata") or {}
-        src = meta.get("source_display") or meta.get("source") or "источник"
+        src = source_label(meta)
         kind = meta.get("source_kind", "")
         heading = meta.get("section_heading", "")
         head = f"Фрагмент {index} [{src}"
@@ -186,7 +218,8 @@ class RAGPipeline:
 
 Ответ:"""
 
-    def _generate_answer(self, prompt: str) -> str:
+    def _generate_answer(self, prompt: str) -> Tuple[str, Optional[str]]:
+        """Текст ответа и finish_reason модели (stop, length, content_filter, ...)."""
         response = self.openai_client.chat.completions.create(
             model=self.model,
             messages=[
@@ -196,7 +229,34 @@ class RAGPipeline:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        return response.choices[0].message.content.strip()
+        choice = response.choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        answer = (choice.message.content or "").strip()
+        if not answer:
+            raise RuntimeError(f"Модель вернула пустой ответ (finish_reason={finish_reason})")
+        return answer, finish_reason
+
+    def _resolve_metric(self) -> Optional[str]:
+        """Метрика расстояния коллекции читается один раз и не предполагается."""
+        if not self._metric_resolved:
+            self._distance_metric = collection_metric(self.vector_store.collection)
+            self._metric_resolved = True
+            if self._distance_metric is None:
+                print("[!] Метрика расстояния коллекции не определена: проверка достаточности данных отключена")
+        return self._distance_metric
+
+    def _no_evidence_result(self, user_query: str, assessment: EvidenceAssessment) -> Dict[str, Any]:
+        """Ответ без вызова чат-модели: в корпусе нет достаточно близких фрагментов."""
+        return {
+            "query": user_query,
+            "answer": NO_EVIDENCE_ANSWER,
+            "from_cache": False,
+            "context_docs": [],
+            "model": None,
+            "mode": "API",
+            "no_evidence": True,
+            "evidence": assessment.as_dict(),
+        }
 
     def query(self, user_query: str, use_cache: bool = True) -> Dict[str, Any]:
         print(f"\n{'='*60}")
@@ -215,12 +275,23 @@ class RAGPipeline:
                     "from_cache": True,
                     "context_docs": ctx,
                     "cached_at": cached_result.get("created_at"),
+                    "incomplete": False,
                 }
             print("[-] Ответ не найден в кеше")
 
         print("[*] Поиск релевантных документов через API...")
         candidate_k = max(self.top_k * 3, self.top_k + 5)
         raw_docs = self.vector_store.search(user_query, top_k=candidate_k)
+        # Без порога метрика не нужна: не читаем её и не предупреждаем о ней зря.
+        metric = self._resolve_metric() if self.max_distance is not None else None
+        assessment = assess_evidence(raw_docs, metric, self.max_distance)
+        if not assessment.sufficient:
+            print(
+                f"[-] Недостаточно данных в корпусе ({assessment.reason}, "
+                f"лучшее расстояние {assessment.best_distance}, порог {assessment.max_distance}); "
+                "чат-модель не вызывается"
+            )
+            return self._no_evidence_result(user_query, assessment)
         context_docs = deduplicate_context_docs(raw_docs, max_docs=self.top_k)
         print(
             f"[+] Найдено {len(raw_docs)} кандидатов, "
@@ -231,10 +302,15 @@ class RAGPipeline:
         prompt = self._create_prompt(user_query, context_docs)
 
         print(f"[*] Генерация ответа через OpenAI API ({self.model})...")
-        answer = self._generate_answer(prompt)
+        answer, finish_reason = self._generate_answer(prompt)
+        notice = INCOMPLETE_NOTICES.get(finish_reason or "")
+        incomplete = notice is not None
+        if notice:
+            print(f"[!] Ответ неполный (finish_reason={finish_reason}): добавлено предупреждение, в кеш не сохраняется")
+            answer = f"{answer}\n\n{notice}"
         print("[+] Ответ получен от API")
 
-        if use_cache:
+        if use_cache and not incomplete:
             print("[*] Сохранение в кеш...")
             context_for_cache = [
                 {
@@ -254,6 +330,8 @@ class RAGPipeline:
             "context_docs": context_docs,
             "model": self.model,
             "mode": "API",
+            "incomplete": incomplete,
+            "finish_reason": finish_reason,
         }
 
     def get_stats(self) -> Dict[str, Any]:
@@ -264,6 +342,7 @@ class RAGPipeline:
             "mode": "API",
             "top_k": self.top_k,
             "max_tokens": self.max_tokens,
+            "max_distance": self.max_distance,
             "corpus_version": os.getenv("RAG_CORPUS_VERSION", "1"),
             "corpus_id": self.corpus_id,
         }

@@ -19,9 +19,36 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestPromptInstructions(unittest.TestCase):
-    def test_prompt_requires_full_enumeration(self):
+    def test_prompt_handles_list_questions(self):
         self.assertIn("перечень", PROMPT_INSTRUCTIONS.lower())
-        self.assertIn("извлеки все элементы перечня полностью", PROMPT_INSTRUCTIONS)
+        self.assertIn("нумерованным списком", PROMPT_INSTRUCTIONS)
+
+    def test_prompt_does_not_demand_unsupported_exhaustive_lists(self):
+        """Модель не должна быть вынуждена «дособирать» перечень, которого нет во фрагментах."""
+        combined = f"{LEGAL_SYSTEM_PROMPT}\n{PROMPT_INSTRUCTIONS}".lower()
+        for pressure in (
+            "извлеки все элементы перечня",
+            "извлекай полный перечень",
+            "список всех элементов",
+            "всех элементов из контекста",
+            "полностью",
+        ):
+            self.assertNotIn(pressure, combined)
+        # вместо этого: только названное во фрагментах и честная оговорка о неполноте
+        self.assertIn("прямо названы", combined)
+        self.assertIn("не добавляй элементы, которых во фрагментах нет", combined)
+        self.assertIn("не называй перечень полным", combined)
+        self.assertIn("может быть неполным", combined)
+        self.assertIn("не дополняй перечень по памяти", combined)
+
+    def test_prompt_keeps_grounding_discipline(self):
+        self.assertIn("Отвечай только на основании найденного контекста", PROMPT_INSTRUCTIONS)
+        self.assertIn("Не придумывай номера статей", PROMPT_INSTRUCTIONS)
+        self.assertIn("Отвечай строго на основании переданных фрагментов", LEGAL_SYSTEM_PROMPT)
+
+    def test_prompt_asks_for_narrow_source_format(self):
+        self.assertIn("«44-ФЗ, ст. 45, ч. 6»", PROMPT_INSTRUCTIONS)
+        self.assertIn("позиция 11", PROMPT_INSTRUCTIONS)
 
     def test_prompt_describes_all_source_layers(self):
         for expected in (

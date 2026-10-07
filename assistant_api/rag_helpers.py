@@ -9,8 +9,10 @@ import bleach
 import markdown
 
 try:
+    from .chunking import source_label
     from .rag_pipeline import RAGPipeline
 except ImportError:
+    from chunking import source_label
     from rag_pipeline import RAGPipeline
 
 _ALLOWED_TAGS = [
@@ -69,7 +71,8 @@ def interaction_log_fields(result: Any, pipeline: RAGPipeline) -> Dict[str, Any]
         return {
             "response": str(result.get("answer", "")),
             "from_cache": bool(result.get("from_cache", False)),
-            "model": result.get("model") or pipeline.model,
+            # Без вызова чат-модели (недостаточно данных в корпусе) модель в журнал не записывается.
+            "model": None if result.get("no_evidence") else (result.get("model") or pipeline.model),
             "top_k": pipeline.top_k,
             "sources_count": sources_count,
         }
@@ -95,7 +98,7 @@ def normalize_sources(context_docs: Any) -> list:
             sources.append(
                 {
                     "text": doc.get("text", ""),
-                    "label": meta.get("source_display", ""),
+                    "label": source_label(meta) if meta else "",
                     "heading": (meta.get("section_heading") or "").strip(),
                 }
             )
