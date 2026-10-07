@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Scope of this license: it applies to the project's source code and its own
-documentation. It does not apply to the legal and court texts stored in
-assistant_api/data/ (laws, Government resolutions, Supreme Court reviews).
-Those are separate source materials; they are not original project code and
-are not relicensed by this file. See assistant_api/data/README.md.
