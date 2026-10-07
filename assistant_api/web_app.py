@@ -66,7 +66,14 @@ class _RedactingFilter(logging.Filter):
 log = logging.getLogger("assistant_api.web")
 log.addFilter(_RedactingFilter())
 
-app = FastAPI(title="RAG Assistant: Independent Guarantees")
+# Интерактивная документация FastAPI (/docs, /redoc, /openapi.json) отключена: у приложения один
+# HTML-интерфейс и форма, а Swagger UI / ReDoc подгружают скрипты с CDN и требуют ослабить CSP.
+app = FastAPI(
+    title="RAG Assistant: Independent Guarantees",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 templates = Jinja2Templates(directory=str(_HERE / "templates"))
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
 
@@ -107,8 +114,6 @@ _CONTENT_SECURITY_POLICY = (
     "default-src 'self'; script-src 'none'; object-src 'none'; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
-# Swagger UI / ReDoc (встроенные страницы FastAPI) подгружают скрипты с CDN: строгий CSP их сломал бы.
-_CSP_EXEMPT_PATHS = frozenset({"/docs", "/redoc", "/docs/oauth2-redirect"})
 
 
 class AssistantUnavailableError(RuntimeError):
@@ -191,8 +196,7 @@ async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     for name, value in _SECURITY_HEADERS.items():
         response.headers.setdefault(name, value)
-    if request.url.path not in _CSP_EXEMPT_PATHS:
-        response.headers.setdefault("Content-Security-Policy", _CONTENT_SECURITY_POLICY)
+    response.headers.setdefault("Content-Security-Policy", _CONTENT_SECURITY_POLICY)
     return response
 
 

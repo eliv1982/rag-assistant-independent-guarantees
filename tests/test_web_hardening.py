@@ -444,12 +444,12 @@ class TestSecurityHeaders(WebAppTestCase):
     def test_no_hsts_because_the_app_cannot_assume_https(self):
         self.assertNotIn("strict-transport-security", self.client.get("/").headers)
 
-    def test_builtin_api_docs_keep_working_and_are_exempt_from_csp(self):
-        response = self.client.get("/docs")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers.get("x-content-type-options"), "nosniff")
-        self.assertNotIn("content-security-policy", response.headers)
+    def test_builtin_api_docs_are_disabled_and_nothing_is_exempt_from_csp(self):
+        for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
+            with self.subTest(path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 404)
+                self.assert_hardened(response)
 
     def test_pages_have_no_inline_or_external_active_content_so_the_csp_does_not_break_them(self):
         web_app._pipeline = FakePipeline()

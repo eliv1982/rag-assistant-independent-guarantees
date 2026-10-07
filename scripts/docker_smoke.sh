@@ -65,8 +65,8 @@ ok "/app/runtime доступен для записи"
 
 page="$(curl -fsS "${BASE}/")"
 echo "$page" | grep -q "RAG Assistant" || fail "главная страница не открылась"
-if echo "$page" | grep -qi "urdg"; then fail "в UI осталась ссылка на URDG"; fi
-ok "главная страница без URDG"
+echo "$page" | grep -q "44-ФЗ" || fail "главная страница не описывает текущий корпус (44-ФЗ / 223-ФЗ)"
+ok "главная страница описывает текущий корпус"
 
 # Ключа нет: ассистент не настроен -> 503 без обращения к OpenAI, ошибка попадает в журнал.
 [ "$(http_code -X POST --data-urlencode 'question=smoke test' "${BASE}/ask")" = "503" ] \
